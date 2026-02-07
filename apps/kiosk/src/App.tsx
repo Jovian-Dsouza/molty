@@ -6,6 +6,7 @@ import { StatusHero } from './components/StatusHero'
 import { ConnectionPanel } from './components/ConnectionPanel'
 import { SendPanel } from './components/SendPanel'
 import { LogPanel } from './components/LogPanel'
+import { PredictionPanel } from './components/PredictionPanel'
 import { useOpenClaw } from './hooks/useOpenClaw'
 
 function App() {
@@ -27,6 +28,7 @@ function App() {
           onDisconnect={debug.handleDisconnect}
         />
         <ConnectionPanel status={debug.status} statusLabel={debug.statusLabel} />
+        <PredictionPanel />
         <SendPanel
           draft={debug.draft}
           isSending={debug.isSending}

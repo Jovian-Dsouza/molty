@@ -1,0 +1,18 @@
+{
+  "name": "prediction-market",
+  "version": "1.0.0",
+  "description": "Our own prediction market: create market, place bet off-chain, resolve via frontend button",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "create-market": "node scripts/create-market.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@erc7824/nitrolite": "^0.5.3",
+    "dotenv": "^17.2.4",
+    "express": "^4.21.0",
+    "viem": "^2.45.1",
+    "ws": "^8.19.0"
+  }
+}
