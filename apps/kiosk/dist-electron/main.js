@@ -16,24 +16,30 @@ function getOrCreateDeviceKey(userDataPath) {
       const raw = readFileSync(keyPath, "utf-8");
       const data = JSON.parse(raw);
       if (data.publicKeyBase64 && data.privateKeyPem && data.deviceId) {
+        if (!data.publicKeyBase64Url) {
+          const buf = Buffer.from(data.publicKeyBase64, "base64");
+          data.publicKeyBase64Url = buf.toString("base64url");
+        }
         return data;
       }
     } catch {
     }
   }
   const { publicKey, privateKey } = generateKeyPairSync("ed25519", {
-    publicKeyEncoding: { format: "jwk" },
     privateKeyEncoding: { format: "pkcs8", type: "pkcs8" }
   });
-  const rawPub = Buffer.from(publicKey.x, "base64url");
+  const jwkPub = publicKey.export({ format: "jwk" });
+  const rawPub = Buffer.from(jwkPub.x, "base64url");
   const publicKeyBase64 = rawPub.toString("base64");
   const base64 = privateKey.toString("base64");
   const pem = `-----BEGIN PRIVATE KEY-----
 ${base64.replace(/(.{64})/g, "$1\n").trimEnd()}
 -----END PRIVATE KEY-----`;
-  const deviceId = "molty-kiosk-" + createHash("sha256").update(rawPub).digest("hex").slice(0, 16);
+  const fingerprint = createHash("sha256").update(rawPub).digest("hex");
+  const deviceId = "molty-kiosk-" + fingerprint;
   const deviceKey = {
     publicKeyBase64,
+    publicKeyBase64Url: jwkPub.x,
     privateKeyPem: pem,
     deviceId
   };
@@ -82,6 +88,7 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? "wss://molty.somehow.dev/";
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
+const OPENCLAW_DEVICE_MINIMAL = process.env.OPENCLAW_DEVICE_MINIMAL === "1" || process.env.OPENCLAW_DEVICE_MINIMAL === "true";
 let ws = null;
 let wsStatus = "disconnected";
 let wsError = null;
@@ -220,8 +227,16 @@ function attachSocketHandlers(socket) {
     console.log("[Gateway] WebSocket open, waiting for challenge...");
     broadcastMessage("system", "WebSocket open, authenticating...");
   };
-  const handleClose = () => {
-    console.log("[Gateway] Disconnected");
+  const handleClose = (...args) => {
+    const ev = args[0];
+    const code = typeof ev?.code === "number" ? ev.code : typeof args[0] === "number" ? args[0] : void 0;
+    const reason = typeof ev?.reason === "string" ? ev.reason : typeof args[1] === "string" ? args[1] : void 0;
+    console.log(
+      "[Gateway] Disconnected",
+      code != null ? `(code=${code}` : "",
+      reason ? ` reason=${reason})` : code != null ? ")" : ""
+    );
+    const wasConnecting = wsStatus === "connecting";
     ws = null;
     pendingConnectId = null;
     stopGatewayTick();
@@ -229,6 +244,11 @@ function attachSocketHandlers(socket) {
       setStatus("disconnected");
     }
     broadcastMessage("system", "Gateway disconnected");
+    if (wasConnecting && wsStatus === "disconnected") {
+      const instructions = "Device may need approval. On the gateway server run: openclaw devices list, then openclaw devices approve <requestId>. Then connect again.";
+      setStatus("error", instructions);
+      broadcastMessage("system", instructions);
+    }
   };
   const handleError = () => {
     console.error("[Gateway] Connection error");
@@ -244,17 +264,31 @@ function attachSocketHandlers(socket) {
       const msg = JSON.parse(text);
       if (msg?.type === "event" && msg?.event === "connect.challenge") {
         const nonce = String(msg.payload?.nonce ?? "");
-        console.log(
-          "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
-        );
         const userData = app.getPath("userData");
         const deviceKey = getOrCreateDeviceKey(userData);
+        const useMinimalDevice = OPENCLAW_DEVICE_MINIMAL;
+        if (useMinimalDevice) {
+          console.log(
+            "[Gateway] Got connect.challenge, sending connect request (minimal device id only)..."
+          );
+        } else {
+          console.log(
+            "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
+          );
+        }
         const { signature, signedAt } = signChallenge(
           nonce,
           deviceKey.privateKeyPem
         );
         const connectReqId = `connect-${Date.now()}`;
         pendingConnectId = connectReqId;
+        const deviceParams = useMinimalDevice ? { id: deviceKey.deviceId } : {
+          id: deviceKey.deviceId,
+          publicKey: deviceKey.publicKeyBase64Url,
+          signature,
+          signedAt,
+          nonce
+        };
         const connectReq = JSON.stringify({
           type: "req",
           id: connectReqId,
@@ -278,13 +312,7 @@ function attachSocketHandlers(socket) {
             },
             locale: "en-US",
             userAgent: "molty-kiosk/1.0.0",
-            device: {
-              id: deviceKey.deviceId,
-              publicKey: deviceKey.publicKeyBase64,
-              signature,
-              signedAt,
-              nonce
-            }
+            device: deviceParams
           }
         });
         socket.send(connectReq);
@@ -295,29 +323,42 @@ function attachSocketHandlers(socket) {
       }
       if (msg?.type === "res" && msg?.id === pendingConnectId) {
         pendingConnectId = null;
+        const payload = msg.payload;
+        const errPayload = msg.error;
+        const requestId = payload?.requestId ?? errPayload?.requestId ?? payload?.pairingRequestId;
         if (msg.ok) {
-          const payload = msg.payload;
-          console.log(
-            "[Gateway] Connect response OK (hello-ok):",
-            JSON.stringify(payload).slice(0, 200)
-          );
-          setStatus("connected");
-          broadcastMessage("system", "Gateway authenticated and connected");
-          const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
-          startGatewayTick(socket, tickMs);
+          if (payload?.type === "hello-pending" && requestId) {
+            const instructions = `Device pending approval. On the gateway server run: openclaw devices approve ${requestId}`;
+            console.log("[Gateway]", instructions);
+            setStatus("error", instructions);
+            broadcastMessage("system", instructions);
+          } else if (payload?.type === "hello-ok" || !payload?.type) {
+            console.log(
+              "[Gateway] Connect response OK (hello-ok):",
+              JSON.stringify(payload).slice(0, 200)
+            );
+            setStatus("connected");
+            broadcastMessage("system", "Gateway authenticated and connected");
+            const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
+            startGatewayTick(socket, tickMs);
+          } else {
+            setStatus("connected");
+            broadcastMessage("system", "Gateway authenticated and connected");
+            const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
+            startGatewayTick(socket, tickMs);
+          }
         } else {
+          const err = msg.error;
+          const baseError = err?.message ?? "Gateway authentication failed";
+          const instructions = requestId ? `On the gateway server run: openclaw devices list, then openclaw devices approve ${requestId}. Then connect again.` : "On the gateway server run: openclaw devices list (to see pending devices), then openclaw devices approve <requestId>. Then connect again.";
+          const fullError = baseError + ". " + instructions;
           console.error(
             "[Gateway] Connect response ERROR:",
-            JSON.stringify(msg.error)
+            baseError,
+            requestId ? `requestId=${requestId}` : ""
           );
-          setStatus(
-            "error",
-            msg.error?.message ?? "Gateway authentication failed"
-          );
-          broadcastMessage(
-            "system",
-            `Auth failed: ${msg.error?.message ?? "unknown error"}`
-          );
+          setStatus("error", fullError);
+          broadcastMessage("system", fullError);
         }
         broadcastMessage("in", text);
         return;

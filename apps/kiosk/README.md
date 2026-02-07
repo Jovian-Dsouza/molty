@@ -23,6 +23,34 @@ OPENCLAW_GATEWAY_TOKEN=your_secret_token node client.js "What is the weather?"
 - Gateway URL defaults to `wss://molty.somehow.dev/`; override with `OPENCLAW_GATEWAY_URL` if needed.
 - The client performs the gateway handshake (connect.challenge → connect with `mode: "operator"`, `client.id: "molty-acp-client"`), then sends a `status` RPC and a `voice_input`-style text command, and prints all responses.
 
+## Device pairing (Electron kiosk and remote gateway)
+
+When the kiosk connects to a **remote** OpenClaw gateway (e.g. `wss://molty.somehow.dev/`), the gateway requires **device approval** before the connection is accepted. The flow:
+
+1. **Start the kiosk** and click Connect (or it auto-connects). The kiosk sends a connect request with device attestation (signed challenge).
+2. The gateway registers the device as **pending** and typically **closes the connection** (e.g. close code 1008) until an operator approves it.
+3. **On the machine running the OpenClaw gateway**, run:
+   ```bash
+   openclaw devices list
+   ```
+   You’ll see pending devices with a `requestId`.
+4. Approve the device:
+   ```bash
+   openclaw devices approve <requestId>
+   ```
+   Use the `requestId` from the list (e.g. a UUID).
+5. **Connect again from the kiosk.** The device is now approved, so the gateway will respond with `hello-ok` and keep the connection open.
+
+If the gateway returns a `requestId` in the response or close reason, the kiosk UI will show the exact `openclaw devices approve <requestId>` command. Otherwise use `openclaw devices list` to get the `requestId`.
+
+**If `openclaw devices list` shows no pending devices:**
+
+- The gateway may be closing the connection **before** creating a pending request (e.g. if it rejects the connect as invalid). Try **minimal device mode** so the gateway may register a pending entry:
+  - In `apps/kiosk/.env` add: `OPENCLAW_DEVICE_MINIMAL=1`
+  - Restart the kiosk, connect again, then on the gateway server run `openclaw devices list` again.
+- On the **gateway server**, run `openclaw logs --follow` while the kiosk connects. The logs usually show why the connection was closed (e.g. "pairing required", "invalid signature", "device not found").
+- Ensure the kiosk and the CLI use the **same gateway URL and token** (same `OPENCLAW_GATEWAY_URL` / `OPENCLAW_GATEWAY_TOKEN` as on the server or `--url` / `--token` when running `openclaw devices list`).
+
 ---
 
 # React + TypeScript + Vite

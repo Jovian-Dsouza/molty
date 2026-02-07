@@ -16,6 +16,8 @@ const KEY_FILE = "openclaw-device-key.json";
 
 export type DeviceKey = {
   publicKeyBase64: string;
+  /** Base64url-encoded raw public key (JWK-style); use for gateway connect.params.device.publicKey */
+  publicKeyBase64Url: string;
   privateKeyPem: string;
   deviceId: string;
 };
@@ -32,6 +34,11 @@ export function getOrCreateDeviceKey(userDataPath: string): DeviceKey {
       const raw = readFileSync(keyPath, "utf-8");
       const data = JSON.parse(raw) as DeviceKey;
       if (data.publicKeyBase64 && data.privateKeyPem && data.deviceId) {
+        // Backfill base64url if missing (older persisted keys)
+        if (!data.publicKeyBase64Url) {
+          const buf = Buffer.from(data.publicKeyBase64, "base64");
+          data.publicKeyBase64Url = buf.toString("base64url");
+        }
         return data;
       }
     } catch {
@@ -40,24 +47,23 @@ export function getOrCreateDeviceKey(userDataPath: string): DeviceKey {
   }
 
   const { publicKey, privateKey } = generateKeyPairSync("ed25519", {
-    publicKeyEncoding: { format: "jwk" },
     privateKeyEncoding: { format: "pkcs8", type: "pkcs8" },
   });
 
-  // JWK .x is raw 32-byte public key as base64url
-  const rawPub = Buffer.from((publicKey as { x: string }).x, "base64url");
+  const jwkPub = publicKey.export({ format: "jwk" }) as { x: string };
+  const rawPub = Buffer.from(jwkPub.x, "base64url");
   const publicKeyBase64 = rawPub.toString("base64");
-  const base64 = (privateKey as Buffer).toString("base64");
+  const base64 = (privateKey as unknown as Buffer).toString("base64");
   const pem = `-----BEGIN PRIVATE KEY-----\n${base64
     .replace(/(.{64})/g, "$1\n")
     .trimEnd()}\n-----END PRIVATE KEY-----`;
 
-  const deviceId =
-    "molty-kiosk-" +
-    createHash("sha256").update(rawPub).digest("hex").slice(0, 16);
+  const fingerprint = createHash("sha256").update(rawPub).digest("hex");
+  const deviceId = "molty-kiosk-" + fingerprint;
 
   const deviceKey: DeviceKey = {
     publicKeyBase64,
+    publicKeyBase64Url: jwkPub.x,
     privateKeyPem: pem,
     deviceId,
   };
