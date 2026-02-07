@@ -18,6 +18,25 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+const VALID_FACES = new Set<FaceExpression>([
+  "idle", "listening", "thinking", "excited", "watching",
+  "winning", "losing", "celebrating", "dying", "error",
+]);
+
+/** Extract [face:STATE] directives from agent text and return cleaned text + face. */
+function parseFaceDirectives(text: string): { cleaned: string; face: FaceExpression | null } {
+  const faceRegex = /\[face:(\w+)\]/g;
+  let lastFace: FaceExpression | null = null;
+  let match;
+  while ((match = faceRegex.exec(text)) !== null) {
+    if (VALID_FACES.has(match[1] as FaceExpression)) {
+      lastFace = match[1] as FaceExpression;
+    }
+  }
+  const cleaned = text.replace(/\[face:\w+\]/g, "").trim();
+  return { cleaned, face: lastFace };
+}
+
 export function useMoltyState() {
   const [face, setFace] = useState<FaceExpression>("idle");
   const [isTalking, setIsTalking] = useState(false);
@@ -285,8 +304,11 @@ export function useMoltyState() {
           }
           if (textContent) {
             accumulated = textContent; // delta sends full text so far
-            // Show last ~200 chars of stripped text during streaming so captions stay readable
-            const cleaned = stripMarkdown(accumulated);
+            // Strip markdown and face directives so captions stay readable during streaming
+            const stripped = stripMarkdown(accumulated);
+            const { cleaned, face: streamFace } = parseFaceDirectives(stripped);
+            // Apply face directive as soon as it arrives during streaming
+            if (streamFace) setFace(streamFace);
             const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
             setSubtitle(display);
           }
@@ -302,10 +324,11 @@ export function useMoltyState() {
             return;
           }
 
-          // Final response — speak it
+          // Final response — extract face directives, then speak cleaned text
           const rawFinal = textContent || accumulated;
-          const finalText = stripMarkdown(rawFinal);
-          console.log("[Molty] Chat final:", finalText.slice(0, 120));
+          const strippedFinal = stripMarkdown(rawFinal);
+          const { cleaned: finalText, face: agentFace } = parseFaceDirectives(strippedFinal);
+          console.log("[Molty] Chat final:", finalText.slice(0, 120), agentFace ? `[face:${agentFace}]` : "");
           currentRunId = null;
           accumulated = "";
 
@@ -323,6 +346,10 @@ export function useMoltyState() {
             return;
           }
 
+          // Apply the agent's face directive (or default to "idle" while talking)
+          if (agentFace) {
+            setFace(agentFace);
+          }
           setSubtitle(finalText);
           setIsTalking(true);
 
