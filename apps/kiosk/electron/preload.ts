@@ -24,6 +24,11 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   invoke: (...args: Parameters<typeof ipcRenderer.invoke>) => ipcRenderer.invoke(...args),
 })
 
+contextBridge.exposeInMainWorld('hume', {
+  speak: (text: string) =>
+    ipcRenderer.invoke('hume:speak', text) as Promise<{ ok: boolean; audio?: string; error?: string }>,
+})
+
 contextBridge.exposeInMainWorld('openclaw', {
   // OpenClaw gateway
   connect: () => ipcRenderer.invoke('openclaw:connect') as Promise<OpenClawStatusPayload>,

@@ -37,6 +37,9 @@ declare global {
   }
 
   interface Window {
+    hume: {
+      speak: (text: string) => Promise<{ ok: boolean; audio?: string; error?: string }>
+    }
     openclaw: {
       connect: () => Promise<OpenClawStatusPayload>
       disconnect: () => Promise<OpenClawStatusPayload>
