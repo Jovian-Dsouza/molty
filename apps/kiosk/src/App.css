@@ -306,6 +306,55 @@ button.small {
   color: var(--muted);
 }
 
+/* ── Stop button (overlays face view) ───────────────────────────────── */
+
+.stop-btn {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  padding: 10px 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  background: rgba(255, 107, 107, 0.15);
+  backdrop-filter: blur(12px);
+  color: #ff6b6b;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 4px 16px rgba(255, 107, 107, 0.2);
+  animation: stop-fade-in 0.2s ease-out;
+}
+
+.stop-btn:hover {
+  background: rgba(255, 107, 107, 0.3);
+  transform: translateX(-50%) translateY(-1px);
+  box-shadow: 0 6px 20px rgba(255, 107, 107, 0.35);
+}
+
+.stop-btn:active {
+  transform: translateX(-50%) scale(0.96);
+}
+
+@keyframes stop-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
 @keyframes pulse {
   0% {
     transform: scale(1);

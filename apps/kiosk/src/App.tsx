@@ -58,6 +58,18 @@ function App() {
         isTalking={molty.isTalking}
         subtitle={molty.subtitle || undefined}
       />
+      {molty.isBusy && (
+        <button
+          className="stop-btn"
+          onClick={molty.stopAndResume}
+          aria-label="Stop"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+            <rect width="14" height="14" rx="2" />
+          </svg>
+          Stop
+        </button>
+      )}
     </div>
   )
 }

@@ -1,17 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useVoice } from "./useVoice";
 
-/** Words that mean "stop talking" without being treated as a new query. */
-const STOP_WORDS = new Set([
-  "stop", "shut up", "quiet", "silence", "enough", "okay stop",
-  "ok stop", "be quiet", "hush", "cancel", "abort", "never mind",
-  "nevermind", "hold on",
-]);
-
-function isStopPhrase(text: string): boolean {
-  return STOP_WORDS.has(text.trim().toLowerCase().replace(/[.!?,]+$/g, ""));
-}
-
 export function useMoltyState() {
   const [face, setFace] = useState<FaceExpression>("idle");
   const [isTalking, setIsTalking] = useState(false);
@@ -161,42 +150,15 @@ export function useMoltyState() {
     [pause, resume]
   );
 
-  // ── Handle new transcripts (including interruptions) ──────────────────
+  // ── Handle new transcripts ─────────────────────────────────────────────
 
   useEffect(() => {
     if (!transcript) return;
+    if (processingRef.current) return; // ignore while busy; user can press Stop
 
-    // If currently speaking or processing, this is an interruption
-    if (processingRef.current || speakingRef.current) {
-      console.log("[Molty] Interrupt detected:", transcript);
-      const wasStop = isStopPhrase(transcript);
-      interrupt();
-
-      // Resume mic
-      resume();
-
-      if (wasStop) {
-        // Just a stop command — go back to idle listening
-        console.log("[Molty] Stop phrase — returning to idle");
-        setTranscript(null);
-        setProcessTrigger((t) => t + 1);
-      } else {
-        // User said something new — process it as a new query after a brief delay
-        // (delay lets the abort settle before sending a new chat.send)
-        console.log("[Molty] Interruption with new query — processing:", transcript);
-        const newText = transcript;
-        setTranscript(null);
-        setTimeout(() => {
-          processTranscript(newText);
-        }, 300);
-      }
-      return;
-    }
-
-    // Normal case: not processing, process the transcript
     processTranscript(transcript);
     setTranscript(null);
-  }, [transcript, processTrigger, processTranscript, setTranscript, interrupt, resume]);
+  }, [transcript, processTrigger, processTranscript, setTranscript]);
 
   // ── Listen for OpenClaw chat events (streamed response) ───────────────
 
@@ -288,8 +250,8 @@ export function useMoltyState() {
           setSubtitle(finalText);
           setIsTalking(true);
 
-          // Resume mic BEFORE speaking so the user can interrupt
-          resume();
+          // Keep mic paused while speaking to avoid picking up TTS audio.
+          // The user can still interrupt via the Stop button.
 
           const result = await speak(finalText);
 
@@ -298,7 +260,7 @@ export function useMoltyState() {
             return;
           }
 
-          // Normal completion
+          // Normal completion — resume mic now that TTS is done
           setIsTalking(false);
           processingRef.current = false;
           if (responseTimeoutRef.current) {
@@ -307,6 +269,7 @@ export function useMoltyState() {
           }
           setFace("idle");
           setSubtitle("");
+          resume();
           setProcessTrigger((t) => t + 1);
           return;
         }
@@ -380,5 +343,32 @@ export function useMoltyState() {
     }
   }, [isConnected, isReady]);
 
-  return { face, isTalking, subtitle, isReady, isListening, isConnected };
+  // ── Stop button handler ────────────────────────────────────────────────
+
+  const stopAndResume = useCallback(() => {
+    console.log("[Molty] Stop button pressed");
+    interrupt();
+    resume();
+
+    // Tell the agent the user asked to stop
+    const stopReq = {
+      type: "req",
+      id: `chat-stop-${Date.now()}`,
+      method: "chat.send",
+      params: {
+        sessionKey: "main",
+        message: "/stop",
+        idempotencyKey: `kiosk-stop-${Date.now()}`,
+      },
+    };
+    window.openclaw.send(stopReq).catch(() => {});
+  }, [interrupt, resume]);
+
+  // Derive "busy" from reactive state (face is "thinking" while waiting, isTalking while speaking)
+  const isBusy = face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error");
+
+  return {
+    face, isTalking, subtitle, isReady, isListening, isConnected,
+    isBusy, stopAndResume,
+  };
 }
