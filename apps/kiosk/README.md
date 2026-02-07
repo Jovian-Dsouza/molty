@@ -1,3 +1,30 @@
+# Kiosk (Molty)
+
+React + TypeScript + Vite front-end for the Molty robot. Also includes a **server-side OpenClaw ACP client** for proof-of-life and scripting (no browser/UI handshake).
+
+## OpenClaw ACP client (server-side)
+
+Connects to the OpenClaw gateway as an **operator** (non-UI), so no Origin header or Control UI mode is required. Use this from Node for automation or testing.
+
+**Run (Node 18+):**
+
+```bash
+cd apps/kiosk
+OPENCLAW_GATEWAY_TOKEN=your_secret_token node client.js
+```
+
+With a custom text command:
+
+```bash
+OPENCLAW_GATEWAY_TOKEN=your_secret_token node client.js "What is the weather?"
+```
+
+- Token is read from `OPENCLAW_GATEWAY_TOKEN` and passed in the WebSocket URL query (`?token=...`); it is never logged.
+- Gateway URL defaults to `wss://molty.somehow.dev/`; override with `OPENCLAW_GATEWAY_URL` if needed.
+- The client performs the gateway handshake (connect.challenge → connect with `mode: "operator"`, `client.id: "molty-acp-client"`), then sends a `status` RPC and a `voice_input`-style text command, and prints all responses.
+
+---
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
@@ -17,9 +44,9 @@ If you are developing a production application, we recommend updating the config
 
 ```js
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(["dist"]),
   {
-    files: ['**/*.{ts,tsx}'],
+    files: ["**/*.{ts,tsx}"],
     extends: [
       // Other configs...
 
@@ -34,40 +61,40 @@ export default defineConfig([
     ],
     languageOptions: {
       parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        project: ["./tsconfig.node.json", "./tsconfig.app.json"],
         tsconfigRootDir: import.meta.dirname,
       },
       // other options...
     },
   },
-])
+]);
 ```
 
 You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
 
 ```js
 // eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+import reactX from "eslint-plugin-react-x";
+import reactDom from "eslint-plugin-react-dom";
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(["dist"]),
   {
-    files: ['**/*.{ts,tsx}'],
+    files: ["**/*.{ts,tsx}"],
     extends: [
       // Other configs...
       // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
+      reactX.configs["recommended-typescript"],
       // Enable lint rules for React DOM
       reactDom.configs.recommended,
     ],
     languageOptions: {
       parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        project: ["./tsconfig.node.json", "./tsconfig.app.json"],
         tsconfigRootDir: import.meta.dirname,
       },
       // other options...
     },
   },
-])
+]);
 ```

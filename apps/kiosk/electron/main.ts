@@ -4,6 +4,7 @@ import path from "node:path";
 import { readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { AssemblyAI } from "assemblyai";
+import { getOrCreateDeviceKey, signChallenge } from "./deviceAttestation";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -64,6 +65,10 @@ const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 let ws: WebSocketLike | null = null;
 let wsStatus: OpenClawStatus = "disconnected";
 let wsError: string | null = null;
+/** Id of the pending connect request; we only treat res with this id as handshake result. */
+let pendingConnectId: string | null = null;
+/** Keepalive timer per gateway policy.tickIntervalMs (e.g. 15000). */
+let tickIntervalId: ReturnType<typeof setInterval> | null = null;
 
 let win: BrowserWindow | null;
 
@@ -96,7 +101,9 @@ async function startTranscriber(): Promise<{ ok: boolean; error?: string }> {
     });
 
     transcriber.on("turn", (turn) => {
-      console.log(`[STT] Turn: end_of_turn=${turn.end_of_turn} transcript="${turn.transcript}"`);
+      console.log(
+        `[STT] Turn: end_of_turn=${turn.end_of_turn} transcript="${turn.transcript}"`
+      );
       if (turn.end_of_turn && turn.transcript.trim()) {
         for (const window of BrowserWindow.getAllWindows()) {
           window.webContents.send("openclaw:transcript", turn.transcript);
@@ -187,6 +194,32 @@ function setStatus(next: OpenClawStatus, error: string | null = null) {
   broadcastStatus();
 }
 
+/** Start periodic status/tick send per gateway policy to keep connection alive. */
+function startGatewayTick(socket: WebSocketLike, intervalMs: number) {
+  stopGatewayTick();
+  tickIntervalId = setInterval(() => {
+    if (ws !== socket || wsStatus !== "connected") return;
+    try {
+      const tickReq = JSON.stringify({
+        type: "req",
+        id: `tick-${Date.now()}`,
+        method: "status",
+        params: {},
+      });
+      socket.send(tickReq);
+    } catch {
+      // ignore
+    }
+  }, intervalMs);
+}
+
+function stopGatewayTick() {
+  if (tickIntervalId !== null) {
+    clearInterval(tickIntervalId);
+    tickIntervalId = null;
+  }
+}
+
 function toText(data: unknown) {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
@@ -202,14 +235,15 @@ function toText(data: unknown) {
 
 function attachSocketHandlers(socket: WebSocketLike) {
   const handleOpen = () => {
-    console.log("[Gateway] Connected");
-    setStatus("connected");
-    broadcastMessage("system", "Gateway connected");
+    console.log("[Gateway] WebSocket open, waiting for challenge...");
+    broadcastMessage("system", "WebSocket open, authenticating...");
   };
 
   const handleClose = () => {
     console.log("[Gateway] Disconnected");
     ws = null;
+    pendingConnectId = null;
+    stopGatewayTick();
     if (wsStatus !== "error") {
       setStatus("disconnected");
     }
@@ -227,6 +261,110 @@ function attachSocketHandlers(socket: WebSocketLike) {
     const data = (eventOrData as { data?: unknown })?.data ?? eventOrData;
     const text = toText(data);
     console.log("[Gateway] ← IN:", text.slice(0, 200));
+
+    // Handle OpenClaw gateway protocol messages
+    try {
+      const msg = JSON.parse(text);
+
+      // Step 1: Server sends connect.challenge → we reply with a "connect" RPC request (device attestation)
+      if (msg?.type === "event" && msg?.event === "connect.challenge") {
+        const nonce = String(msg.payload?.nonce ?? "");
+        console.log(
+          "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
+        );
+        const userData = app.getPath("userData");
+        const deviceKey = getOrCreateDeviceKey(userData);
+        const { signature, signedAt } = signChallenge(
+          nonce,
+          deviceKey.privateKeyPem
+        );
+        const connectReqId = `connect-${Date.now()}`;
+        pendingConnectId = connectReqId;
+        const connectReq = JSON.stringify({
+          type: "req",
+          id: connectReqId,
+          method: "connect",
+          params: {
+            minProtocol: 3,
+            maxProtocol: 3,
+            client: {
+              id: "molty-kiosk",
+              version: "1.0.0",
+              platform: process.platform,
+              mode: "operator",
+            },
+            role: "operator",
+            scopes: ["operator.read", "operator.write"],
+            caps: ["voice"],
+            commands: [],
+            permissions: {},
+            auth: {
+              token: OPENCLAW_GATEWAY_TOKEN,
+            },
+            locale: "en-US",
+            userAgent: "molty-kiosk/1.0.0",
+            device: {
+              id: deviceKey.deviceId,
+              publicKey: deviceKey.publicKeyBase64,
+              signature,
+              signedAt,
+              nonce,
+            },
+          },
+        });
+        socket.send(connectReq);
+        console.log("[Gateway] → OUT: connect request sent");
+        broadcastMessage("out", connectReq);
+        broadcastMessage("in", text);
+        return;
+      }
+
+      // Step 2: Server responds to our connect request (match by id per protocol)
+      if (msg?.type === "res" && msg?.id === pendingConnectId) {
+        pendingConnectId = null;
+        if (msg.ok) {
+          const payload = msg.payload as
+            | {
+                type?: string;
+                policy?: { tickIntervalMs?: number };
+              }
+            | undefined;
+          console.log(
+            "[Gateway] Connect response OK (hello-ok):",
+            JSON.stringify(payload).slice(0, 200)
+          );
+          setStatus("connected");
+          broadcastMessage("system", "Gateway authenticated and connected");
+          // Start keepalive tick per gateway policy (default 15s)
+          const tickMs = payload?.policy?.tickIntervalMs ?? 15_000;
+          startGatewayTick(socket, tickMs);
+        } else {
+          console.error(
+            "[Gateway] Connect response ERROR:",
+            JSON.stringify(msg.error)
+          );
+          setStatus(
+            "error",
+            msg.error?.message ?? "Gateway authentication failed"
+          );
+          broadcastMessage(
+            "system",
+            `Auth failed: ${msg.error?.message ?? "unknown error"}`
+          );
+        }
+        broadcastMessage("in", text);
+        return;
+      }
+
+      // Other res (e.g. status, tick response) — forward to UI only
+      if (msg?.type === "res") {
+        broadcastMessage("in", text);
+        return;
+      }
+    } catch {
+      // Not JSON, pass through
+    }
+
     broadcastMessage("in", text);
   };
 
@@ -280,6 +418,8 @@ function connectGateway(): OpenClawStatusPayload {
 }
 
 function disconnectGateway(): OpenClawStatusPayload {
+  pendingConnectId = null;
+  stopGatewayTick();
   if (ws) {
     try {
       ws.close();
@@ -298,7 +438,11 @@ function disconnectGateway(): OpenClawStatusPayload {
 
 function sendGateway(payload: unknown): { ok: boolean; error?: string } {
   if (!ws || wsStatus !== "connected") {
-    console.log("[Gateway] Cannot send — not connected (status:", wsStatus, ")");
+    console.log(
+      "[Gateway] Cannot send — not connected (status:",
+      wsStatus,
+      ")"
+    );
     return { ok: false, error: "Gateway not connected" };
   }
 
