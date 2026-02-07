@@ -105,6 +105,11 @@ async function startTranscriber(): Promise<{ ok: boolean; error?: string }> {
       sampleRate: 16_000,
       formatTurns: true,
       keyterms: ["Molty"],
+      // Conservative turn detection — give users more time to pause/think
+      // before the turn is considered complete (prevents premature sends).
+      endOfTurnConfidenceThreshold: 0.7,
+      minEndOfTurnSilenceWhenConfident: 800,
+      maxTurnSilence: 3600,
     });
 
     transcriber.on("turn", (turn) => {
