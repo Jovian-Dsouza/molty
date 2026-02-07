@@ -40,6 +40,7 @@ function parseFaceDirectives(text: string): { cleaned: string; face: FaceExpress
 export function useMoltyState() {
   const [face, setFace] = useState<FaceExpression>("idle");
   const [isTalking, setIsTalking] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [subtitle, setSubtitle] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [isReady, setIsReady] = useState(false);
@@ -89,6 +90,7 @@ export function useMoltyState() {
     processingRef.current = false;
     speakingRef.current = false;
     setIsTalking(false);
+    setIsSending(false);
     if (responseTimeoutRef.current) {
       clearTimeout(responseTimeoutRef.current);
       responseTimeoutRef.current = null;
@@ -154,7 +156,8 @@ export function useMoltyState() {
       // Pause mic while waiting for response (avoid sending silence to transcriber)
       pause();
       setFace("thinking");
-      setSubtitle(text);
+      setSubtitle(`Sending: "${text}"`);
+      setIsSending(true);
 
       // If OpenClaw never responds, resume after a timeout so we don't stay stuck
       if (responseTimeoutRef.current) clearTimeout(responseTimeoutRef.current);
@@ -163,6 +166,7 @@ export function useMoltyState() {
         if (processingRef.current) {
           console.log("[Molty] Response timeout — resuming listening");
           processingRef.current = false;
+          setIsSending(false);
           setFace("listening");
           setSubtitle("");
           resume();
@@ -184,6 +188,7 @@ export function useMoltyState() {
       console.log("[Molty] Sending chat.send to OpenClaw:", JSON.stringify(chatReq).slice(0, 200));
       const result = await window.openclaw.send(chatReq);
       console.log("[Molty] Send result:", JSON.stringify(result));
+      setIsSending(false);
     },
     [pause, resume]
   );
@@ -297,7 +302,8 @@ export function useMoltyState() {
         }
 
         if (state === "delta") {
-          // Streaming delta — accumulate text
+          // Streaming delta — accumulate text (send succeeded)
+          setIsSending(false);
           if (runId && runId !== currentRunId) {
             currentRunId = runId;
             accumulated = "";
@@ -363,7 +369,8 @@ export function useMoltyState() {
             return;
           }
 
-          // Normal completion — resume mic now that TTS is done
+          // Normal completion — resume mic and auto-listen for a reply
+          // (user can respond without saying the wake word again)
           setIsTalking(false);
           processingRef.current = false;
           if (responseTimeoutRef.current) {
@@ -371,8 +378,20 @@ export function useMoltyState() {
             responseTimeoutRef.current = null;
           }
           setFace("listening");
-          setSubtitle("");
+          setSubtitle("I'm listening...");
           resume();
+
+          // Enter "awaiting query" mode so the next utterance is treated as
+          // a direct reply — no wake word required.
+          awaitingQueryRef.current = true;
+          if (awaitingTimeoutRef.current) clearTimeout(awaitingTimeoutRef.current);
+          awaitingTimeoutRef.current = setTimeout(() => {
+            awaitingQueryRef.current = false;
+            awaitingTimeoutRef.current = null;
+            setSubtitle("");
+            setFace("listening");
+          }, 15_000); // 15 s window for user to reply
+
           setProcessTrigger((t) => t + 1);
           return;
         }
@@ -399,6 +418,7 @@ export function useMoltyState() {
           currentRunId = null;
           accumulated = "";
           processingRef.current = false;
+          setIsSending(false);
           if (responseTimeoutRef.current) {
             clearTimeout(responseTimeoutRef.current);
             responseTimeoutRef.current = null;
@@ -496,7 +516,7 @@ export function useMoltyState() {
   const isBusy = face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error" && face !== "listening");
 
   return {
-    face, isTalking, subtitle, isReady, isListening, isConnected,
+    face, isTalking, isSending, subtitle, isReady, isListening, isConnected,
     isBusy, stopAndResume, manualStart,
   };
 }
