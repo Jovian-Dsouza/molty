@@ -1,34 +1,55 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
 import './App.css'
+import { StatusHero } from './components/StatusHero'
+import { ConnectionPanel } from './components/ConnectionPanel'
+import { SendPanel } from './components/SendPanel'
+import { LogPanel } from './components/LogPanel'
+import { useOpenClaw } from './hooks/useOpenClaw'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const {
+    status,
+    statusLabel,
+    logs,
+    draft,
+    setDraft,
+    isSending,
+    isConnected,
+    isConnecting,
+    handleConnect,
+    handleDisconnect,
+    handleSend,
+    resetDraft,
+    clearLogs,
+  } = useOpenClaw()
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
+    <div className="app">
+      <StatusHero
+        status={status}
+        isConnected={isConnected}
+        isConnecting={isConnecting}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
+      />
+
+      <ConnectionPanel status={status} statusLabel={statusLabel} />
+
+      <SendPanel
+        draft={draft}
+        isSending={isSending}
+        isConnected={isConnected}
+        onDraftChange={setDraft}
+        onReset={resetDraft}
+        onSend={handleSend}
+      />
+
+      <LogPanel logs={logs} onClear={clearLogs} />
+
+      <footer className="hint">
+        Set <code>OPENCLAW_GATEWAY_TOKEN</code> and optional{' '}
+        <code>VITE_OPENCLAW_GATEWAY_URL</code> before launching.
+      </footer>
+    </div>
   )
 }
 
