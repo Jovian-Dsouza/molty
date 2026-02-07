@@ -47,6 +47,11 @@ export function useMoltyState() {
   const processingRef = useRef(false);
   const speakingRef = useRef(false);
   const interruptedRef = useRef(false);
+  /** Active Web Audio API playback — stored so interrupt() can stop it. */
+  const activeAudioRef = useRef<{
+    source: AudioBufferSourceNode;
+    ctx: AudioContext;
+  } | null>(null);
   const responseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const awaitingQueryRef = useRef(false); // true after user says just "Molty" — next utterance is the query
   const awaitingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -69,7 +74,18 @@ export function useMoltyState() {
   const interrupt = useCallback(() => {
     console.log("[Molty] Interrupting current response");
 
-    // Cancel browser TTS immediately
+    // Stop Hume TTS audio playback (Web Audio API)
+    if (activeAudioRef.current) {
+      try {
+        activeAudioRef.current.source.stop();
+        activeAudioRef.current.ctx.close();
+      } catch {
+        // best-effort stop
+      }
+      activeAudioRef.current = null;
+    }
+
+    // Cancel browser TTS fallback if it was used
     if ("speechSynthesis" in window) {
       speechSynthesis.cancel();
     }
@@ -101,9 +117,9 @@ export function useMoltyState() {
     setSubtitle("");
   }, []);
 
-  // ── Speak with interruption support ───────────────────────────────────
+  // ── Browser TTS fallback ─────────────────────────────────────────────
 
-  const speak = useCallback((text: string): Promise<"done" | "interrupted"> => {
+  const speakBrowser = useCallback((text: string): Promise<"done" | "interrupted"> => {
     return new Promise((resolve) => {
       if (!("speechSynthesis" in window)) {
         console.log("[Molty] SpeechSynthesis not available, skipping TTS");
@@ -111,10 +127,7 @@ export function useMoltyState() {
         return;
       }
 
-      interruptedRef.current = false;
-      speakingRef.current = true;
-
-      console.log("[Molty] Speaking:", text.slice(0, 80));
+      console.log("[Molty] Speaking (browser fallback):", text.slice(0, 80));
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 1.0;
       utterance.pitch = 1.1;
@@ -123,20 +136,17 @@ export function useMoltyState() {
       utterance.onend = () => {
         speakingRef.current = false;
         if (interruptedRef.current) {
-          console.log("[Molty] Speech ended (was interrupted)");
           resolve("interrupted");
         } else {
-          console.log("[Molty] Finished speaking");
           resolve("done");
         }
       };
       utterance.onerror = (e) => {
         speakingRef.current = false;
         if (e.error === "canceled" || interruptedRef.current) {
-          console.log("[Molty] Speech cancelled (interrupted)");
           resolve("interrupted");
         } else {
-          console.error("[Molty] TTS error:", e.error);
+          console.error("[Molty] Browser TTS error:", e.error);
           resolve("done");
         }
       };
@@ -144,6 +154,78 @@ export function useMoltyState() {
       speechSynthesis.speak(utterance);
     });
   }, []);
+
+  // ── Speak with Hume AI TTS (falls back to browser TTS) ─────────────
+
+  const speak = useCallback(async (text: string): Promise<"done" | "interrupted"> => {
+    interruptedRef.current = false;
+    speakingRef.current = true;
+
+    console.log("[Molty] Speaking (Hume TTS):", text.slice(0, 80));
+
+    try {
+      // Request synthesised audio from Hume AI via Electron main process
+      const result = await window.hume.speak(text);
+
+      // Check for interruption while we were waiting for the API
+      if (interruptedRef.current) {
+        speakingRef.current = false;
+        return "interrupted";
+      }
+
+      if (!result.ok || !result.audio) {
+        console.warn("[Molty] Hume TTS unavailable:", result.error, "— falling back to browser TTS");
+        return speakBrowser(text);
+      }
+
+      // Decode base64 MP3 → ArrayBuffer → AudioBuffer
+      const binaryStr = atob(result.audio);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+
+      const audioCtx = new AudioContext();
+      const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer);
+
+      // Check again after decode
+      if (interruptedRef.current) {
+        audioCtx.close();
+        speakingRef.current = false;
+        return "interrupted";
+      }
+
+      // Play the decoded audio
+      return new Promise<"done" | "interrupted">((resolve) => {
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+
+        // Store ref so interrupt() can stop playback
+        activeAudioRef.current = { source, ctx: audioCtx };
+
+        source.onended = () => {
+          activeAudioRef.current = null;
+          audioCtx.close();
+          speakingRef.current = false;
+          if (interruptedRef.current) {
+            console.log("[Molty] Hume audio ended (was interrupted)");
+            resolve("interrupted");
+          } else {
+            console.log("[Molty] Finished speaking (Hume TTS)");
+            resolve("done");
+          }
+        };
+
+        source.start(0);
+      });
+    } catch (err) {
+      console.error("[Molty] Hume TTS error:", err, "— falling back to browser TTS");
+      // Reset audio ref on error
+      activeAudioRef.current = null;
+      return speakBrowser(text);
+    }
+  }, [speakBrowser]);
 
   // ── Process a transcript ──────────────────────────────────────────────
 

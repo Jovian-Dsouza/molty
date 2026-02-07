@@ -160,6 +160,81 @@ async function stopTranscriber(): Promise<{ ok: boolean; error?: string }> {
   return { ok: true };
 }
 
+// ── Hume AI TTS (Octave) ─────────────────────────────────────────────────
+
+const HUME_API_KEY = process.env.HUME_API_KEY;
+// Optional: set a named voice from Hume's Voice Library (e.g. "Dacher", "Ava Song").
+// If empty, a dynamic voice is generated from HUME_VOICE_DESCRIPTION each request.
+const HUME_VOICE_NAME = process.env.HUME_VOICE_NAME || "";
+// Describes the voice character. Used as voice-design prompt (no voice name) or acting
+// instructions (with a voice name). Molty is an enthusiastic lobster robot.
+const HUME_VOICE_DESCRIPTION =
+  process.env.HUME_VOICE_DESCRIPTION ||
+  "Upbeat, enthusiastic, and playful masculine voice with high energy. Speaks quickly and expressively, like an excited robot mascot. Occasionally dramatic.";
+
+async function humeSynthesize(
+  text: string
+): Promise<{ ok: boolean; audio?: string; error?: string }> {
+  if (!HUME_API_KEY) {
+    console.log("[Hume TTS] No HUME_API_KEY set, skipping");
+    return { ok: false, error: "Missing HUME_API_KEY" };
+  }
+
+  try {
+    console.log("[Hume TTS] Synthesizing:", text.slice(0, 100));
+
+    // Build utterance — optionally with a named voice
+    const utterance: Record<string, unknown> = {
+      text,
+      description: HUME_VOICE_DESCRIPTION,
+    };
+    if (HUME_VOICE_NAME) {
+      utterance.voice = { name: HUME_VOICE_NAME, provider: "HUME_AI" };
+    }
+
+    const body: Record<string, unknown> = {
+      utterances: [utterance],
+      format: { type: "mp3" },
+      num_generations: 1,
+    };
+
+    // If using a named voice, we can opt into instant_mode for lower latency
+    if (HUME_VOICE_NAME) {
+      body.instant_mode = true;
+    }
+
+    const response = await fetch("https://api.hume.ai/v0/tts", {
+      method: "POST",
+      headers: {
+        "X-Hume-Api-Key": HUME_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("[Hume TTS] API error:", response.status, errText.slice(0, 300));
+      return { ok: false, error: `Hume API error (${response.status}): ${errText.slice(0, 200)}` };
+    }
+
+    const result = (await response.json()) as {
+      generations?: { generation_id?: string; audio?: string }[];
+    };
+    const audio = result.generations?.[0]?.audio;
+    if (!audio) {
+      return { ok: false, error: "No audio in Hume response" };
+    }
+
+    console.log("[Hume TTS] Got audio, length:", audio.length);
+    return { ok: true, audio };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Hume TTS failed";
+    console.error("[Hume TTS] Error:", message);
+    return { ok: false, error: message };
+  }
+}
+
 // ── OpenClaw Gateway ──────────────────────────────────────────────────────
 
 function normalizeGatewayUrl(rawUrl: string) {
@@ -608,6 +683,9 @@ ipcMain.handle("openclaw:connect", () => connectGateway());
 ipcMain.handle("openclaw:disconnect", () => disconnectGateway());
 ipcMain.handle("openclaw:get-status", () => getStatusPayload());
 ipcMain.handle("openclaw:send", (_event, payload) => sendGateway(payload));
+
+// Hume AI TTS
+ipcMain.handle("hume:speak", (_event, text: string) => humeSynthesize(text));
 
 // AssemblyAI streaming STT
 ipcMain.handle("openclaw:start-listening", () => startTranscriber());
