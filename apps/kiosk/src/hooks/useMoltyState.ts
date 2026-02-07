@@ -1,15 +1,40 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useVoice } from "./useVoice";
 
-/** Words that mean "stop talking" without being treated as a new query. */
-const STOP_WORDS = new Set([
-  "stop", "shut up", "quiet", "silence", "enough", "okay stop",
-  "ok stop", "be quiet", "hush", "cancel", "abort", "never mind",
-  "nevermind", "hold on",
+/** Strip common markdown formatting so captions and TTS read clean text. */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, "")        // code blocks (must come before inline)
+    .replace(/#{1,6}\s+/g, "")             // headings
+    .replace(/\*\*(.+?)\*\*/g, "$1")       // bold
+    .replace(/__(.+?)__/g, "$1")           // bold alt
+    .replace(/\*(.+?)\*/g, "$1")           // italic
+    .replace(/_(.+?)_/g, "$1")             // italic alt
+    .replace(/`(.+?)`/g, "$1")             // inline code
+    .replace(/\[(.+?)\]\(.+?\)/g, "$1")    // links
+    .replace(/^[-*+]\s+/gm, "")            // list bullets
+    .replace(/^\d+\.\s+/gm, "")            // numbered lists
+    .replace(/\n{2,}/g, "\n")              // collapse blank lines
+    .trim();
+}
+
+const VALID_FACES = new Set<FaceExpression>([
+  "idle", "listening", "thinking", "excited", "watching",
+  "winning", "losing", "celebrating", "dying", "error",
 ]);
 
-function isStopPhrase(text: string): boolean {
-  return STOP_WORDS.has(text.trim().toLowerCase().replace(/[.!?,]+$/g, ""));
+/** Extract [face:STATE] directives from agent text and return cleaned text + face. */
+function parseFaceDirectives(text: string): { cleaned: string; face: FaceExpression | null } {
+  const faceRegex = /\[face:(\w+)\]/g;
+  let lastFace: FaceExpression | null = null;
+  let match;
+  while ((match = faceRegex.exec(text)) !== null) {
+    if (VALID_FACES.has(match[1] as FaceExpression)) {
+      lastFace = match[1] as FaceExpression;
+    }
+  }
+  const cleaned = text.replace(/\[face:\w+\]/g, "").trim();
+  return { cleaned, face: lastFace };
 }
 
 export function useMoltyState() {
@@ -22,6 +47,8 @@ export function useMoltyState() {
   const speakingRef = useRef(false);
   const interruptedRef = useRef(false);
   const responseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const awaitingQueryRef = useRef(false); // true after user says just "Molty" — next utterance is the query
+  const awaitingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [processTrigger, setProcessTrigger] = useState(0);
 
   const { isListening, transcript, setTranscript, pause, resume } =
@@ -30,7 +57,7 @@ export function useMoltyState() {
   // Update face based on voice state
   useEffect(() => {
     if (!processingRef.current && isListening) {
-      setFace("idle");
+      setFace("listening");
     }
   }, [isListening]);
 
@@ -66,7 +93,7 @@ export function useMoltyState() {
       clearTimeout(responseTimeoutRef.current);
       responseTimeoutRef.current = null;
     }
-    setFace("idle");
+    setFace("listening");
     setSubtitle("");
   }, []);
 
@@ -136,7 +163,7 @@ export function useMoltyState() {
         if (processingRef.current) {
           console.log("[Molty] Response timeout — resuming listening");
           processingRef.current = false;
-          setFace("idle");
+          setFace("listening");
           setSubtitle("");
           resume();
           setProcessTrigger((t) => t + 1);
@@ -161,42 +188,68 @@ export function useMoltyState() {
     [pause, resume]
   );
 
-  // ── Handle new transcripts (including interruptions) ──────────────────
+  // ── Handle new transcripts (wake-word gated) ─────────────────────────
 
   useEffect(() => {
     if (!transcript) return;
+    if (processingRef.current) {
+      setTranscript(null);
+      return; // ignore while busy; user can press Stop
+    }
 
-    // If currently speaking or processing, this is an interruption
-    if (processingRef.current || speakingRef.current) {
-      console.log("[Molty] Interrupt detected:", transcript);
-      const wasStop = isStopPhrase(transcript);
-      interrupt();
-
-      // Resume mic
-      resume();
-
-      if (wasStop) {
-        // Just a stop command — go back to idle listening
-        console.log("[Molty] Stop phrase — returning to idle");
-        setTranscript(null);
-        setProcessTrigger((t) => t + 1);
-      } else {
-        // User said something new — process it as a new query after a brief delay
-        // (delay lets the abort settle before sending a new chat.send)
-        console.log("[Molty] Interruption with new query — processing:", transcript);
-        const newText = transcript;
-        setTranscript(null);
-        setTimeout(() => {
-          processTranscript(newText);
-        }, 300);
+    // If we're awaiting a follow-up query after user said just "Molty"
+    if (awaitingQueryRef.current) {
+      awaitingQueryRef.current = false;
+      if (awaitingTimeoutRef.current) {
+        clearTimeout(awaitingTimeoutRef.current);
+        awaitingTimeoutRef.current = null;
       }
+      setSubtitle("");
+      processTranscript(transcript);
+      setTranscript(null);
       return;
     }
 
-    // Normal case: not processing, process the transcript
-    processTranscript(transcript);
+    // Check for wake word "molty" or common mis-transcriptions (case-insensitive)
+    const lower = transcript.toLowerCase();
+    const wakeWords = ["molty", "malty", "molti", "malti", "multi", "moulty", "moulty", "melty"];
+    let matchIdx = -1;
+    let matchLen = 0;
+    for (const w of wakeWords) {
+      const i = lower.indexOf(w);
+      if (i !== -1) {
+        matchIdx = i;
+        matchLen = w.length;
+        break;
+      }
+    }
+    if (matchIdx === -1) {
+      // No wake word — ignore
+      setTranscript(null);
+      return;
+    }
+
+    // Extract everything after the wake word
+    const query = transcript.slice(matchIdx + matchLen).trim();
     setTranscript(null);
-  }, [transcript, processTrigger, processTranscript, setTranscript, interrupt, resume]);
+
+    if (!query) {
+      // User just said "Molty" — acknowledge and wait for the next utterance
+      setFace("listening");
+      setSubtitle("I'm listening...");
+      awaitingQueryRef.current = true;
+      // Auto-reset after 10 seconds if no follow-up comes
+      awaitingTimeoutRef.current = setTimeout(() => {
+        awaitingQueryRef.current = false;
+        awaitingTimeoutRef.current = null;
+        setSubtitle("");
+        setFace("listening");
+      }, 10_000);
+      return;
+    }
+
+    processTranscript(query);
+  }, [transcript, processTrigger, processTranscript, setTranscript]);
 
   // ── Listen for OpenClaw chat events (streamed response) ───────────────
 
@@ -251,7 +304,13 @@ export function useMoltyState() {
           }
           if (textContent) {
             accumulated = textContent; // delta sends full text so far
-            setSubtitle(accumulated);
+            // Strip markdown and face directives so captions stay readable during streaming
+            const stripped = stripMarkdown(accumulated);
+            const { cleaned, face: streamFace } = parseFaceDirectives(stripped);
+            // Apply face directive as soon as it arrives during streaming
+            if (streamFace) setFace(streamFace);
+            const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
+            setSubtitle(display);
           }
           return;
         }
@@ -265,9 +324,11 @@ export function useMoltyState() {
             return;
           }
 
-          // Final response — speak it
-          const finalText = textContent || accumulated;
-          console.log("[Molty] Chat final:", finalText.slice(0, 120));
+          // Final response — extract face directives, then speak cleaned text
+          const rawFinal = textContent || accumulated;
+          const strippedFinal = stripMarkdown(rawFinal);
+          const { cleaned: finalText, face: agentFace } = parseFaceDirectives(strippedFinal);
+          console.log("[Molty] Chat final:", finalText.slice(0, 120), agentFace ? `[face:${agentFace}]` : "");
           currentRunId = null;
           accumulated = "";
 
@@ -278,18 +339,22 @@ export function useMoltyState() {
               clearTimeout(responseTimeoutRef.current);
               responseTimeoutRef.current = null;
             }
-            setFace("idle");
+            setFace("listening");
             setSubtitle("");
             resume();
             setProcessTrigger((t) => t + 1);
             return;
           }
 
+          // Apply the agent's face directive (or default to "idle" while talking)
+          if (agentFace) {
+            setFace(agentFace);
+          }
           setSubtitle(finalText);
           setIsTalking(true);
 
-          // Resume mic BEFORE speaking so the user can interrupt
-          resume();
+          // Keep mic paused while speaking to avoid picking up TTS audio.
+          // The user can still interrupt via the Stop button.
 
           const result = await speak(finalText);
 
@@ -298,15 +363,16 @@ export function useMoltyState() {
             return;
           }
 
-          // Normal completion
+          // Normal completion — resume mic now that TTS is done
           setIsTalking(false);
           processingRef.current = false;
           if (responseTimeoutRef.current) {
             clearTimeout(responseTimeoutRef.current);
             responseTimeoutRef.current = null;
           }
-          setFace("idle");
+          setFace("listening");
           setSubtitle("");
+          resume();
           setProcessTrigger((t) => t + 1);
           return;
         }
@@ -315,6 +381,14 @@ export function useMoltyState() {
           // If we triggered the abort ourselves, don't show an error
           if (interruptedRef.current) {
             console.log("[Molty] Chat aborted (user-initiated interrupt)");
+            currentRunId = null;
+            accumulated = "";
+            return;
+          }
+
+          // Ignore stale error/aborted events that arrive when we're not processing
+          if (!processingRef.current) {
+            console.log("[Molty] Ignoring stale chat error/aborted (not processing)");
             currentRunId = null;
             accumulated = "";
             return;
@@ -332,7 +406,7 @@ export function useMoltyState() {
           setFace("error");
           setSubtitle(errMsg);
           setTimeout(() => {
-            setFace("idle");
+            setFace("listening");
             setSubtitle("");
             resume();
             setProcessTrigger((t) => t + 1);
@@ -380,5 +454,49 @@ export function useMoltyState() {
     }
   }, [isConnected, isReady]);
 
-  return { face, isTalking, subtitle, isReady, isListening, isConnected };
+  // ── Stop button handler ────────────────────────────────────────────────
+
+  const stopAndResume = useCallback(() => {
+    console.log("[Molty] Stop button pressed");
+    interrupt();
+    resume();
+
+    // Tell the agent the user asked to stop
+    const stopReq = {
+      type: "req",
+      id: `chat-stop-${Date.now()}`,
+      method: "chat.send",
+      params: {
+        sessionKey: "main",
+        message: "/stop",
+        idempotencyKey: `kiosk-stop-${Date.now()}`,
+      },
+    };
+    window.openclaw.send(stopReq).catch(() => {});
+  }, [interrupt, resume]);
+
+  // ── Manual start handler (fallback if wake word isn't recognized) ─────
+
+  const manualStart = useCallback(() => {
+    if (processingRef.current || awaitingQueryRef.current) return;
+    console.log("[Molty] Manual start pressed");
+    setFace("listening");
+    setSubtitle("I'm listening...");
+    awaitingQueryRef.current = true;
+    if (awaitingTimeoutRef.current) clearTimeout(awaitingTimeoutRef.current);
+    awaitingTimeoutRef.current = setTimeout(() => {
+      awaitingQueryRef.current = false;
+      awaitingTimeoutRef.current = null;
+      setSubtitle("");
+      setFace("listening");
+    }, 10_000);
+  }, []);
+
+  // Derive "busy" from reactive state (face is "thinking" while waiting, isTalking while speaking)
+  const isBusy = face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error" && face !== "listening");
+
+  return {
+    face, isTalking, subtitle, isReady, isListening, isConnected,
+    isBusy, stopAndResume, manualStart,
+  };
 }
