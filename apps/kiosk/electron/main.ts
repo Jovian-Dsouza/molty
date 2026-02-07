@@ -4,7 +4,11 @@ import path from "node:path";
 import { readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { AssemblyAI } from "assemblyai";
-import { getOrCreateDeviceKey, signChallenge } from "./deviceAttestation";
+import {
+  getOrCreateDeviceKey,
+  signChallenge,
+  publicKeyRawBase64Url,
+} from "./deviceAttestation";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,10 +65,8 @@ type WebSocketLike = {
 const OPENCLAW_GATEWAY_URL =
   process.env.OPENCLAW_GATEWAY_URL ?? "wss://molty.somehow.dev/";
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
-/** When set, send minimal device (id only). Use if gateway never shows pending with full attestation. */
-const OPENCLAW_DEVICE_MINIMAL =
-  process.env.OPENCLAW_DEVICE_MINIMAL === "1" ||
-  process.env.OPENCLAW_DEVICE_MINIMAL === "true";
+// Note: minimal device mode (id-only) is no longer supported by the gateway schema.
+// The gateway requires publicKey, signature, signedAt when device is present.
 
 let ws: WebSocketLike | null = null;
 let wsStatus: OpenClawStatus = "disconnected";
@@ -292,39 +294,56 @@ function attachSocketHandlers(socket: WebSocketLike) {
     console.log("[Gateway] ← IN:", text.slice(0, 200));
 
     // Handle OpenClaw gateway protocol messages
+    let msg: Record<string, unknown> | undefined;
     try {
-      const msg = JSON.parse(text);
+      msg = JSON.parse(text);
+    } catch {
+      // Not JSON — pass through to UI
+      broadcastMessage("in", text);
+      return;
+    }
 
-      // Step 1: Server sends connect.challenge → we reply with a "connect" RPC request (device attestation)
-      if (msg?.type === "event" && msg?.event === "connect.challenge") {
-        const nonce = String(msg.payload?.nonce ?? "");
+    // Step 1: Server sends connect.challenge → we reply with a "connect" RPC request (device attestation)
+    if (msg?.type === "event" && msg?.event === "connect.challenge") {
+      try {
+        const nonce = String(
+          (msg.payload as Record<string, unknown>)?.nonce ?? ""
+        );
         const userData = app.getPath("userData");
         const deviceKey = getOrCreateDeviceKey(userData);
-        const useMinimalDevice = OPENCLAW_DEVICE_MINIMAL;
-        if (useMinimalDevice) {
-          console.log(
-            "[Gateway] Got connect.challenge, sending connect request (minimal device id only)..."
-          );
-        } else {
-          console.log(
-            "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
-          );
-        }
-        const { signature, signedAt } = signChallenge(
-          nonce,
-          deviceKey.privateKeyPem
+
+        // Client identity constants (must match OpenClaw's GATEWAY_CLIENT_IDS/MODES)
+        const clientId = "cli";
+        const clientMode = "cli";
+        const role = "operator";
+        const scopes = ["operator.read", "operator.write"];
+
+        console.log(
+          "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
         );
+
+        const { signature, signedAt } = signChallenge({
+          nonce,
+          privateKeyPem: deviceKey.privateKeyPem,
+          deviceId: deviceKey.deviceId,
+          clientId,
+          clientMode,
+          role,
+          scopes,
+          token: OPENCLAW_GATEWAY_TOKEN ?? null,
+        });
+
         const connectReqId = `connect-${Date.now()}`;
         pendingConnectId = connectReqId;
-        const deviceParams = useMinimalDevice
-          ? { id: deviceKey.deviceId }
-          : {
-              id: deviceKey.deviceId,
-              publicKey: deviceKey.publicKeyBase64Url,
-              signature,
-              signedAt,
-              nonce,
-            };
+
+        const deviceParams = {
+          id: deviceKey.deviceId,
+          publicKey: publicKeyRawBase64Url(deviceKey.publicKeyPem),
+          signature,
+          signedAt,
+          nonce,
+        };
+
         const connectReq = JSON.stringify({
           type: "req",
           id: connectReqId,
@@ -333,99 +352,111 @@ function attachSocketHandlers(socket: WebSocketLike) {
             minProtocol: 3,
             maxProtocol: 3,
             client: {
-              id: "molty-kiosk",
+              id: clientId,
               version: "1.0.0",
               platform: process.platform,
-              mode: "operator",
+              mode: clientMode,
             },
-            role: "operator",
-            scopes: ["operator.read", "operator.write"],
+            role,
+            scopes,
             caps: ["voice"],
-            commands: [],
-            permissions: {},
             auth: {
               token: OPENCLAW_GATEWAY_TOKEN,
             },
             locale: "en-US",
-            userAgent: "molty-kiosk/1.0.0",
+            userAgent: "openclaw-cli/1.0.0 molty-kiosk",
             device: deviceParams,
           },
         });
         socket.send(connectReq);
         console.log("[Gateway] → OUT: connect request sent");
         broadcastMessage("out", connectReq);
-        broadcastMessage("in", text);
-        return;
+      } catch (err) {
+        const errMsg =
+          err instanceof Error ? err.message : String(err);
+        console.error(
+          "[Gateway] Failed to handle connect.challenge:",
+          errMsg,
+          err instanceof Error ? err.stack : ""
+        );
+        setStatus(
+          "error",
+          `Device attestation failed: ${errMsg}. Try deleting the device key and restarting.`
+        );
+        broadcastMessage(
+          "system",
+          `Device attestation error: ${errMsg}`
+        );
       }
-
-      // Step 2: Server responds to our connect request (match by id per protocol)
-      if (msg?.type === "res" && msg?.id === pendingConnectId) {
-        pendingConnectId = null;
-        const payload = msg.payload as
-          | {
-              type?: string;
-              policy?: { tickIntervalMs?: number };
-              requestId?: string;
-            }
-          | undefined;
-        const errPayload = msg.error as
-          | { message?: string; requestId?: string }
-          | undefined;
-        const requestId =
-          payload?.requestId ??
-          errPayload?.requestId ??
-          (payload as Record<string, unknown>)?.pairingRequestId;
-
-        if (msg.ok) {
-          // hello-ok = connected; hello-pending = device pending approval (some gateways send this before closing)
-          if (payload?.type === "hello-pending" && requestId) {
-            const instructions = `Device pending approval. On the gateway server run: openclaw devices approve ${requestId}`;
-            console.log("[Gateway]", instructions);
-            setStatus("error", instructions);
-            broadcastMessage("system", instructions);
-          } else if (payload?.type === "hello-ok" || !payload?.type) {
-            console.log(
-              "[Gateway] Connect response OK (hello-ok):",
-              JSON.stringify(payload).slice(0, 200)
-            );
-            setStatus("connected");
-            broadcastMessage("system", "Gateway authenticated and connected");
-            const tickMs = payload?.policy?.tickIntervalMs ?? 15_000;
-            startGatewayTick(socket, tickMs);
-          } else {
-            setStatus("connected");
-            broadcastMessage("system", "Gateway authenticated and connected");
-            const tickMs = payload?.policy?.tickIntervalMs ?? 15_000;
-            startGatewayTick(socket, tickMs);
-          }
-        } else {
-          const err = msg.error as { message?: string } | undefined;
-          const baseError = err?.message ?? "Gateway authentication failed";
-          const instructions = requestId
-            ? `On the gateway server run: openclaw devices list, then openclaw devices approve ${requestId}. Then connect again.`
-            : "On the gateway server run: openclaw devices list (to see pending devices), then openclaw devices approve <requestId>. Then connect again.";
-          const fullError = baseError + ". " + instructions;
-          console.error(
-            "[Gateway] Connect response ERROR:",
-            baseError,
-            requestId ? `requestId=${requestId}` : ""
-          );
-          setStatus("error", fullError);
-          broadcastMessage("system", fullError);
-        }
-        broadcastMessage("in", text);
-        return;
-      }
-
-      // Other res (e.g. status, tick response) — forward to UI only
-      if (msg?.type === "res") {
-        broadcastMessage("in", text);
-        return;
-      }
-    } catch {
-      // Not JSON, pass through
+      broadcastMessage("in", text);
+      return;
     }
 
+    // Step 2: Server responds to our connect request (match by id per protocol)
+    if (msg?.type === "res" && msg?.id === pendingConnectId) {
+      pendingConnectId = null;
+      const payload = msg.payload as
+        | {
+            type?: string;
+            policy?: { tickIntervalMs?: number };
+            requestId?: string;
+          }
+        | undefined;
+      const errPayload = msg.error as
+        | {
+            message?: string;
+            requestId?: string;
+            details?: { requestId?: string };
+          }
+        | undefined;
+      const requestId =
+        payload?.requestId ??
+        errPayload?.requestId ??
+        errPayload?.details?.requestId ??
+        (payload as Record<string, unknown>)?.pairingRequestId;
+
+      if (msg.ok) {
+        // hello-ok = connected; hello-pending = device pending approval (some gateways send this before closing)
+        if (payload?.type === "hello-pending" && requestId) {
+          const instructions = `Device pending approval. On the gateway server run: openclaw devices approve ${requestId}`;
+          console.log("[Gateway]", instructions);
+          setStatus("error", instructions);
+          broadcastMessage("system", instructions);
+        } else if (payload?.type === "hello-ok" || !payload?.type) {
+          console.log(
+            "[Gateway] Connect response OK (hello-ok):",
+            JSON.stringify(payload).slice(0, 200)
+          );
+          setStatus("connected");
+          broadcastMessage("system", "Gateway authenticated and connected");
+          const tickMs = payload?.policy?.tickIntervalMs ?? 15_000;
+          startGatewayTick(socket, tickMs);
+        } else {
+          setStatus("connected");
+          broadcastMessage("system", "Gateway authenticated and connected");
+          const tickMs = payload?.policy?.tickIntervalMs ?? 15_000;
+          startGatewayTick(socket, tickMs);
+        }
+      } else {
+        const err = msg.error as { message?: string } | undefined;
+        const baseError = err?.message ?? "Gateway authentication failed";
+        const instructions = requestId
+          ? `On the gateway server run: openclaw devices list, then openclaw devices approve ${requestId}. Then connect again.`
+          : "On the gateway server run: openclaw devices list (to see pending devices), then openclaw devices approve <requestId>. Then connect again.";
+        const fullError = baseError + ". " + instructions;
+        console.error(
+          "[Gateway] Connect response ERROR:",
+          baseError,
+          requestId ? `requestId=${requestId}` : ""
+        );
+        setStatus("error", fullError);
+        broadcastMessage("system", fullError);
+      }
+      broadcastMessage("in", text);
+      return;
+    }
+
+    // Other res (e.g. status, tick response) — forward to UI only
     broadcastMessage("in", text);
   };
 
