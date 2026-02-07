@@ -1,0 +1,11 @@
+{
+  "name": "lifi-test",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "quote": "node get-quote.js",
+    "chains": "node get-chains.js",
+    "tokens": "node get-tokens.js",
+    "status": "node get-status.js <txHash>"
+  }
+}
