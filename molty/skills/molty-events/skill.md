@@ -1,3 +1,9 @@
+---
+name: molty-events
+description: Live cryptocurrency price feeds from Stork oracle. Use when user asks about crypto prices.
+metadata: {"openclaw": {"requires": {"env": ["STORK_API_KEY"]}}}
+---
+
 # Molty Events — Live Price Feeds
 
 This skill provides live cryptocurrency price data using the Stork oracle API.
