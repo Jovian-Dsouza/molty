@@ -1,13 +1,41 @@
 import { ipcMain, app, BrowserWindow } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, chmodSync } from "node:fs";
 import { Buffer as Buffer$1 } from "node:buffer";
 import { AssemblyAI } from "assemblyai";
-import { generateKeyPairSync, createHash, createPrivateKey, sign } from "node:crypto";
+import { generateKeyPairSync, createPrivateKey, sign, createHash, createPublicKey } from "node:crypto";
 const KEY_FILE = "openclaw-device-key.json";
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 function getKeyPath(userDataPath) {
   return path.join(userDataPath, KEY_FILE);
+}
+function base64UrlEncode(buf) {
+  return buf.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+function derivePublicKeyRaw(publicKeyPem) {
+  const key = createPublicKey(publicKeyPem);
+  const spki = key.export({ type: "spki", format: "der" });
+  if (spki.length === ED25519_SPKI_PREFIX.length + 32 && spki.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)) {
+    return spki.subarray(ED25519_SPKI_PREFIX.length);
+  }
+  return spki;
+}
+function fingerprintPublicKey(publicKeyPem) {
+  const raw = derivePublicKeyRaw(publicKeyPem);
+  return createHash("sha256").update(raw).digest("hex");
+}
+function publicKeyRawBase64Url(publicKeyPem) {
+  return base64UrlEncode(derivePublicKeyRaw(publicKeyPem));
+}
+function validateDeviceKey(data) {
+  try {
+    const key = createPrivateKey({ key: data.privateKeyPem, format: "pem" });
+    const testSig = sign(null, Buffer.from("test", "utf-8"), key);
+    return Buffer.isBuffer(testSig) || testSig instanceof Uint8Array;
+  } catch {
+    return false;
+  }
 }
 function getOrCreateDeviceKey(userDataPath) {
   const keyPath = getKeyPath(userDataPath);
@@ -15,52 +43,90 @@ function getOrCreateDeviceKey(userDataPath) {
     try {
       const raw = readFileSync(keyPath, "utf-8");
       const data = JSON.parse(raw);
-      if (data.publicKeyBase64 && data.privateKeyPem && data.deviceId) {
-        if (!data.publicKeyBase64Url) {
-          const buf = Buffer.from(data.publicKeyBase64, "base64");
-          data.publicKeyBase64Url = buf.toString("base64url");
+      if (data.publicKeyPem && data.privateKeyPem) {
+        const derivedId = fingerprintPublicKey(data.publicKeyPem);
+        if (validateDeviceKey({ ...data, deviceId: derivedId })) {
+          if (data.deviceId !== derivedId) {
+            console.log(
+              "[deviceAttestation] Updating deviceId to match public key fingerprint"
+            );
+            const updated = {
+              deviceId: derivedId,
+              publicKeyPem: data.publicKeyPem,
+              privateKeyPem: data.privateKeyPem
+            };
+            try {
+              writeFileSync(keyPath, JSON.stringify(updated, null, 2), {
+                mode: 384
+              });
+            } catch {
+            }
+          }
+          return {
+            deviceId: derivedId,
+            publicKeyPem: data.publicKeyPem,
+            privateKeyPem: data.privateKeyPem
+          };
         }
-        return data;
+        console.warn(
+          "[deviceAttestation] Persisted key is corrupted, regenerating..."
+        );
       }
     } catch {
     }
+    try {
+      unlinkSync(keyPath);
+    } catch {
+    }
   }
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519", {
-    privateKeyEncoding: { format: "pkcs8", type: "pkcs8" }
-  });
-  const jwkPub = publicKey.export({ format: "jwk" });
-  const rawPub = Buffer.from(jwkPub.x, "base64url");
-  const publicKeyBase64 = rawPub.toString("base64");
-  const base64 = privateKey.toString("base64");
-  const pem = `-----BEGIN PRIVATE KEY-----
-${base64.replace(/(.{64})/g, "$1\n").trimEnd()}
------END PRIVATE KEY-----`;
-  const fingerprint = createHash("sha256").update(rawPub).digest("hex");
-  const deviceId = "molty-kiosk-" + fingerprint;
+  console.log("[deviceAttestation] Generating new Ed25519 device keypair...");
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const deviceId = fingerprintPublicKey(publicKeyPem);
   const deviceKey = {
-    publicKeyBase64,
-    publicKeyBase64Url: jwkPub.x,
-    privateKeyPem: pem,
-    deviceId
+    deviceId,
+    publicKeyPem,
+    privateKeyPem
   };
   try {
     mkdirSync(userDataPath, { recursive: true });
-    writeFileSync(keyPath, JSON.stringify(deviceKey, null, 0), "utf-8");
+    writeFileSync(keyPath, JSON.stringify(deviceKey, null, 2), {
+      mode: 384
+    });
+    try {
+      chmodSync(keyPath, 384);
+    } catch {
+    }
+    console.log("[deviceAttestation] Device key persisted to", keyPath);
+    console.log("[deviceAttestation] Device ID:", deviceId);
   } catch (e) {
     console.warn("[deviceAttestation] Could not persist device key:", e);
   }
   return deviceKey;
 }
-function signChallenge(nonce, privateKeyPem) {
+function signChallenge(params) {
+  const signedAt = Date.now();
+  const scopesStr = params.scopes.join(",");
+  const tokenStr = params.token ?? "";
+  const compoundPayload = [
+    "v2",
+    params.deviceId,
+    params.clientId,
+    params.clientMode,
+    params.role,
+    scopesStr,
+    String(signedAt),
+    tokenStr,
+    params.nonce
+  ].join("|");
   const key = createPrivateKey({
-    key: privateKeyPem,
+    key: params.privateKeyPem,
     format: "pem"
   });
-  const signedAt = Date.now();
-  const payload = Buffer.from(nonce, "utf-8");
-  const sig = sign(null, payload, key);
+  const sig = sign(null, Buffer.from(compoundPayload, "utf-8"), key);
   return {
-    signature: sig.toString("base64"),
+    signature: base64UrlEncode(sig),
     signedAt
   };
 }
@@ -88,7 +154,6 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? "wss://molty.somehow.dev/";
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
-const OPENCLAW_DEVICE_MINIMAL = process.env.OPENCLAW_DEVICE_MINIMAL === "1" || process.env.OPENCLAW_DEVICE_MINIMAL === "true";
 let ws = null;
 let wsStatus = "disconnected";
 let wsError = null;
@@ -260,31 +325,42 @@ function attachSocketHandlers(socket) {
     const data = eventOrData?.data ?? eventOrData;
     const text = toText(data);
     console.log("[Gateway] ← IN:", text.slice(0, 200));
+    let msg;
     try {
-      const msg = JSON.parse(text);
-      if (msg?.type === "event" && msg?.event === "connect.challenge") {
-        const nonce = String(msg.payload?.nonce ?? "");
+      msg = JSON.parse(text);
+    } catch {
+      broadcastMessage("in", text);
+      return;
+    }
+    if (msg?.type === "event" && msg?.event === "connect.challenge") {
+      try {
+        const nonce = String(
+          msg.payload?.nonce ?? ""
+        );
         const userData = app.getPath("userData");
         const deviceKey = getOrCreateDeviceKey(userData);
-        const useMinimalDevice = OPENCLAW_DEVICE_MINIMAL;
-        if (useMinimalDevice) {
-          console.log(
-            "[Gateway] Got connect.challenge, sending connect request (minimal device id only)..."
-          );
-        } else {
-          console.log(
-            "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
-          );
-        }
-        const { signature, signedAt } = signChallenge(
-          nonce,
-          deviceKey.privateKeyPem
+        const clientId = "cli";
+        const clientMode = "cli";
+        const role = "operator";
+        const scopes = ["operator.read", "operator.write"];
+        console.log(
+          "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
         );
+        const { signature, signedAt } = signChallenge({
+          nonce,
+          privateKeyPem: deviceKey.privateKeyPem,
+          deviceId: deviceKey.deviceId,
+          clientId,
+          clientMode,
+          role,
+          scopes,
+          token: OPENCLAW_GATEWAY_TOKEN ?? null
+        });
         const connectReqId = `connect-${Date.now()}`;
         pendingConnectId = connectReqId;
-        const deviceParams = useMinimalDevice ? { id: deviceKey.deviceId } : {
+        const deviceParams = {
           id: deviceKey.deviceId,
-          publicKey: deviceKey.publicKeyBase64Url,
+          publicKey: publicKeyRawBase64Url(deviceKey.publicKeyPem),
           signature,
           signedAt,
           nonce
@@ -297,77 +373,85 @@ function attachSocketHandlers(socket) {
             minProtocol: 3,
             maxProtocol: 3,
             client: {
-              id: "molty-kiosk",
+              id: clientId,
               version: "1.0.0",
               platform: process.platform,
-              mode: "operator"
+              mode: clientMode
             },
-            role: "operator",
-            scopes: ["operator.read", "operator.write"],
+            role,
+            scopes,
             caps: ["voice"],
-            commands: [],
-            permissions: {},
             auth: {
               token: OPENCLAW_GATEWAY_TOKEN
             },
             locale: "en-US",
-            userAgent: "molty-kiosk/1.0.0",
+            userAgent: "openclaw-cli/1.0.0 molty-kiosk",
             device: deviceParams
           }
         });
         socket.send(connectReq);
         console.log("[Gateway] → OUT: connect request sent");
         broadcastMessage("out", connectReq);
-        broadcastMessage("in", text);
-        return;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(
+          "[Gateway] Failed to handle connect.challenge:",
+          errMsg,
+          err instanceof Error ? err.stack : ""
+        );
+        setStatus(
+          "error",
+          `Device attestation failed: ${errMsg}. Try deleting the device key and restarting.`
+        );
+        broadcastMessage(
+          "system",
+          `Device attestation error: ${errMsg}`
+        );
       }
-      if (msg?.type === "res" && msg?.id === pendingConnectId) {
-        pendingConnectId = null;
-        const payload = msg.payload;
-        const errPayload = msg.error;
-        const requestId = payload?.requestId ?? errPayload?.requestId ?? payload?.pairingRequestId;
-        if (msg.ok) {
-          if (payload?.type === "hello-pending" && requestId) {
-            const instructions = `Device pending approval. On the gateway server run: openclaw devices approve ${requestId}`;
-            console.log("[Gateway]", instructions);
-            setStatus("error", instructions);
-            broadcastMessage("system", instructions);
-          } else if (payload?.type === "hello-ok" || !payload?.type) {
-            console.log(
-              "[Gateway] Connect response OK (hello-ok):",
-              JSON.stringify(payload).slice(0, 200)
-            );
-            setStatus("connected");
-            broadcastMessage("system", "Gateway authenticated and connected");
-            const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
-            startGatewayTick(socket, tickMs);
-          } else {
-            setStatus("connected");
-            broadcastMessage("system", "Gateway authenticated and connected");
-            const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
-            startGatewayTick(socket, tickMs);
-          }
-        } else {
-          const err = msg.error;
-          const baseError = err?.message ?? "Gateway authentication failed";
-          const instructions = requestId ? `On the gateway server run: openclaw devices list, then openclaw devices approve ${requestId}. Then connect again.` : "On the gateway server run: openclaw devices list (to see pending devices), then openclaw devices approve <requestId>. Then connect again.";
-          const fullError = baseError + ". " + instructions;
-          console.error(
-            "[Gateway] Connect response ERROR:",
-            baseError,
-            requestId ? `requestId=${requestId}` : ""
+      broadcastMessage("in", text);
+      return;
+    }
+    if (msg?.type === "res" && msg?.id === pendingConnectId) {
+      pendingConnectId = null;
+      const payload = msg.payload;
+      const errPayload = msg.error;
+      const requestId = payload?.requestId ?? errPayload?.requestId ?? errPayload?.details?.requestId ?? payload?.pairingRequestId;
+      if (msg.ok) {
+        if (payload?.type === "hello-pending" && requestId) {
+          const instructions = `Device pending approval. On the gateway server run: openclaw devices approve ${requestId}`;
+          console.log("[Gateway]", instructions);
+          setStatus("error", instructions);
+          broadcastMessage("system", instructions);
+        } else if (payload?.type === "hello-ok" || !payload?.type) {
+          console.log(
+            "[Gateway] Connect response OK (hello-ok):",
+            JSON.stringify(payload).slice(0, 200)
           );
-          setStatus("error", fullError);
-          broadcastMessage("system", fullError);
+          setStatus("connected");
+          broadcastMessage("system", "Gateway authenticated and connected");
+          const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
+          startGatewayTick(socket, tickMs);
+        } else {
+          setStatus("connected");
+          broadcastMessage("system", "Gateway authenticated and connected");
+          const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
+          startGatewayTick(socket, tickMs);
         }
-        broadcastMessage("in", text);
-        return;
+      } else {
+        const err = msg.error;
+        const baseError = err?.message ?? "Gateway authentication failed";
+        const instructions = requestId ? `On the gateway server run: openclaw devices list, then openclaw devices approve ${requestId}. Then connect again.` : "On the gateway server run: openclaw devices list (to see pending devices), then openclaw devices approve <requestId>. Then connect again.";
+        const fullError = baseError + ". " + instructions;
+        console.error(
+          "[Gateway] Connect response ERROR:",
+          baseError,
+          requestId ? `requestId=${requestId}` : ""
+        );
+        setStatus("error", fullError);
+        broadcastMessage("system", fullError);
       }
-      if (msg?.type === "res") {
-        broadcastMessage("in", text);
-        return;
-      }
-    } catch {
+      broadcastMessage("in", text);
+      return;
     }
     broadcastMessage("in", text);
   };

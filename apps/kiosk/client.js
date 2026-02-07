@@ -72,21 +72,19 @@ function main() {
           minProtocol: 3,
           maxProtocol: 3,
           client: {
-            id: "molty-acp-client",
+            id: "cli",
             version: "1.0.0",
             platform: process.platform,
-            mode: "operator",
+            mode: "cli",
           },
           role: "operator",
           scopes: ["operator.read", "operator.write"],
           caps: [],
-          commands: [],
-          permissions: {},
           auth: { token: TOKEN },
           locale: "en-US",
-          userAgent: "molty-acp-client/1.0.0",
-          // Minimal device identity (some gateways require it for non-UI clients)
-          device: { id: "molty-acp-client-node" },
+          userAgent: "openclaw-cli/1.0.0 molty-acp-client",
+          // Note: device identity with full attestation is required for remote gateways.
+          // This minimal client omits it — use the Electron kiosk for device pairing.
         },
       };
       ws.send(JSON.stringify(connectReq));
@@ -112,14 +110,20 @@ function main() {
         );
         console.log("[→] status request sent");
 
-        // 2) Send text command (same shape as kiosk voice_input)
-        const cmd = {
-          type: "voice_input",
-          text: textCommand,
-          timestamp: Date.now(),
+        // 2) Send text command via chat.send RPC
+        const chatReqId = `chat-${Date.now()}`;
+        const chatReq = {
+          type: "req",
+          id: chatReqId,
+          method: "chat.send",
+          params: {
+            sessionKey: "main",
+            message: textCommand,
+            idempotencyKey: `client-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          },
         };
-        ws.send(JSON.stringify(cmd));
-        console.log("[→] text command sent:", JSON.stringify(cmd));
+        ws.send(JSON.stringify(chatReq));
+        console.log("[→] chat.send sent:", JSON.stringify(chatReq));
       } else {
         console.error("[handshake] FAILED:", msg.error ?? "unknown");
         ws.close();

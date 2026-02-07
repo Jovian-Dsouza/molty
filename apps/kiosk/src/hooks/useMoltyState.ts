@@ -49,7 +49,7 @@ export function useMoltyState() {
     });
   }, []);
 
-  // Process a transcript: send to OpenClaw, wait for response
+  // Process a transcript: send to OpenClaw via chat.send RPC, wait for response
   const processTranscript = useCallback(
     async (text: string) => {
       if (processingRef.current) return;
@@ -74,15 +74,21 @@ export function useMoltyState() {
           resume();
           setProcessTrigger((t) => t + 1);
         }
-      }, 15_000);
+      }, 30_000);
 
-      const message = {
-        type: "voice_input",
-        text,
-        timestamp: Date.now(),
+      // Send as a proper OpenClaw RPC request (chat.send)
+      const chatReq = {
+        type: "req",
+        id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        method: "chat.send",
+        params: {
+          sessionKey: "main",
+          message: text,
+          idempotencyKey: `kiosk-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        },
       };
-      console.log("[Molty] Sending to OpenClaw:", JSON.stringify(message));
-      const result = await window.openclaw.send(message);
+      console.log("[Molty] Sending chat.send to OpenClaw:", JSON.stringify(chatReq).slice(0, 200));
+      const result = await window.openclaw.send(chatReq);
       console.log("[Molty] Send result:", JSON.stringify(result));
     },
     [pause, resume]
@@ -96,51 +102,125 @@ export function useMoltyState() {
     }
   }, [transcript, processTrigger, processTranscript, setTranscript]);
 
-  // Listen for OpenClaw responses
+  // Listen for OpenClaw chat events (streamed response)
   useEffect(() => {
-    const off = window.openclaw.onMessage(async (payload) => {
-      console.log(`[Molty] Message received: direction=${payload.direction} data=${payload.data.slice(0, 200)}`);
+    // Accumulate streamed text across delta events for the current run
+    let currentRunId: string | null = null;
+    let accumulated = "";
 
+    const off = window.openclaw.onMessage(async (payload) => {
       if (payload.direction !== "in") return;
-      if (!processingRef.current) {
-        console.log("[Molty] Ignoring — not currently processing a transcript");
+
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(payload.data);
+      } catch {
         return;
       }
 
-      try {
-        const msg = JSON.parse(payload.data) as ServerToKiosk;
-        if (msg.type !== "response") {
-          console.log("[Molty] Ignoring message type:", msg.type);
+      // Handle chat events (streamed response from agent)
+      if (msg.type === "event" && msg.event === "chat") {
+        const chatPayload = msg.payload as {
+          runId?: string;
+          sessionKey?: string;
+          seq?: number;
+          state?: string;
+          message?: { role?: string; content?: string | unknown[] };
+          errorMessage?: string;
+        } | undefined;
+
+        if (!chatPayload) return;
+
+        const { runId, state } = chatPayload;
+
+        // Extract text content from the message
+        const messageContent = chatPayload.message;
+        let textContent = "";
+        if (typeof messageContent?.content === "string") {
+          textContent = messageContent.content;
+        } else if (Array.isArray(messageContent?.content)) {
+          // Content blocks format: [{type: "text", text: "..."}]
+          textContent = (messageContent.content as { type?: string; text?: string }[])
+            .filter((b) => b.type === "text" && b.text)
+            .map((b) => b.text)
+            .join("");
+        }
+
+        if (state === "delta") {
+          // Streaming delta — accumulate text
+          if (runId && runId !== currentRunId) {
+            currentRunId = runId;
+            accumulated = "";
+          }
+          if (textContent) {
+            accumulated = textContent; // delta sends full text so far
+            setSubtitle(accumulated);
+          }
+          console.log(`[Molty] Chat delta (seq=${chatPayload.seq}): ${accumulated.slice(0, 80)}...`);
           return;
         }
 
-        console.log("[Molty] Got response — face:", msg.face, "text:", msg.text?.slice(0, 80));
+        if (state === "final") {
+          // Final response — speak it
+          const finalText = textContent || accumulated;
+          console.log("[Molty] Chat final:", finalText.slice(0, 120));
+          currentRunId = null;
+          accumulated = "";
 
-        // Update face expression from server
-        if (msg.face) {
-          setFace(msg.face);
+          if (!finalText.trim()) {
+            // Empty response — resume listening
+            processingRef.current = false;
+            if (responseTimeoutRef.current) {
+              clearTimeout(responseTimeoutRef.current);
+              responseTimeoutRef.current = null;
+            }
+            setFace("idle");
+            setSubtitle("");
+            resume();
+            setProcessTrigger((t) => t + 1);
+            return;
+          }
+
+          setSubtitle(finalText);
+          setIsTalking(true);
+
+          await speak(finalText);
+
+          setIsTalking(false);
+          processingRef.current = false;
+          if (responseTimeoutRef.current) {
+            clearTimeout(responseTimeoutRef.current);
+            responseTimeoutRef.current = null;
+          }
+          setFace("idle");
+          setSubtitle("");
+
+          // Resume mic listening
+          resume();
+          setProcessTrigger((t) => t + 1);
+          return;
         }
 
-        // Show subtitle and speak the response
-        setSubtitle(msg.text);
-        setIsTalking(true);
-
-        await speak(msg.text);
-
-        setIsTalking(false);
-        processingRef.current = false;
-        if (responseTimeoutRef.current) {
-          clearTimeout(responseTimeoutRef.current);
-          responseTimeoutRef.current = null;
+        if (state === "error" || state === "aborted") {
+          const errMsg = chatPayload.errorMessage ?? state;
+          console.error("[Molty] Chat error/aborted:", errMsg);
+          currentRunId = null;
+          accumulated = "";
+          processingRef.current = false;
+          if (responseTimeoutRef.current) {
+            clearTimeout(responseTimeoutRef.current);
+            responseTimeoutRef.current = null;
+          }
+          setFace("error");
+          setSubtitle(errMsg);
+          setTimeout(() => {
+            setFace("idle");
+            setSubtitle("");
+            resume();
+            setProcessTrigger((t) => t + 1);
+          }, 3000);
+          return;
         }
-        setFace("idle");
-        setSubtitle("");
-
-        // Resume mic listening
-        resume();
-        setProcessTrigger((t) => t + 1);
-      } catch {
-        // Not a valid ServerToKiosk message, ignore
       }
     });
     return off;
