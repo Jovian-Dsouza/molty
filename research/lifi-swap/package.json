@@ -1,0 +1,15 @@
+{
+  "name": "lifi-swap",
+  "version": "1.0.0",
+  "description": "LI.FI swap, bridge, and cross-chain demo",
+  "type": "module",
+  "scripts": {
+    "start": "node lifi-swap.js",
+    "chains": "node lifi-swap.js chains",
+    "quote": "node lifi-swap.js quote",
+    "swap": "node lifi-swap.js swap"
+  },
+  "dependencies": {
+    "viem": "^2.45.1"
+  }
+}

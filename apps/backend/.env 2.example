@@ -1,0 +1,16 @@
+# Wallet (operator / market creator)
+PRIVATE_KEY=0x...
+
+# Yellow Network (sandbox for dev, production for real)
+YELLOW_WS_URL=wss://clearnet-sandbox.yellow.com/ws
+YELLOW_FAUCET_URL=https://clearnet-sandbox.yellow.com/faucet/requestTokens
+RPC_URL=https://rpc.sepolia.org
+
+# Server
+PORT=3999
+STATE_FILE=./state.json
+
+# Default market (optional)
+DEFAULT_ASSET=ETHUSD
+DEFAULT_TARGET_PRICE=3500
+DEFAULT_AMOUNT=1000000
