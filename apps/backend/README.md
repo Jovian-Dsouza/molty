@@ -1,8 +1,25 @@
-# Our Own Prediction Market
+# Prediction Market API
 
-Simple **create-your-own market** flow: create a market (script or API), place the bet off-chain via Yellow, then **resolve with one click** in the kiosk frontend.
+Create markets (Yellow ClearNet), list them, and resolve with one click from the dashboard or kiosk.
 
-## Example
+## Deploy on Railway
+
+1. **New Project** → Deploy from GitHub → select this repo.
+2. **Root directory:** set to `apps/backend` (or configure build/start to run from this folder).
+3. **Variables** (required):
+   - `PRIVATE_KEY` — wallet private key (0x...) for Yellow auth.
+   - `RPC_URL` — e.g. `https://rpc.sepolia.org` or `https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY`.
+   - `YELLOW_WS_URL` — `wss://clearnet-sandbox.yellow.com/ws` (sandbox) or `wss://clearnet.yellow.com/ws` (production).
+4. **Optional:** `DEFAULT_ASSET=ETHUSD`, `DEFAULT_AMOUNT=1000000`, `PORT` (Railway sets this automatically).
+5. Deploy. Use the generated URL (e.g. `https://your-app.up.railway.app`) as `NEXT_PUBLIC_PREDICTION_API_URL` in the dashboard.
+
+**Health check:** `GET /health` returns `{ "status": "ok" }`. Railway can use this for readiness.
+
+**State:** Markets are stored in `state.json` in the container. On Railway the filesystem is ephemeral — a redeploy clears state. For persistent storage you’d add a DB or Redis later.
+
+---
+
+## Example (local)
 
 **"Will ETH be above $3,500 by end of day?"** — one LONG bet, resolved by current price when you hit Resolve.
 
@@ -10,7 +27,7 @@ Simple **create-your-own market** flow: create a market (script or API), place t
 
 1. **Install and env**
    ```bash
-   cd research/prediction-market
+   cd apps/backend
    cp .env.example .env
    # Edit .env: set PRIVATE_KEY (wallet with Yellow sandbox funds)
    npm install

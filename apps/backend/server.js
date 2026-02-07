@@ -15,13 +15,21 @@ const PORT = parseInt(process.env.PORT || '3999', 10);
 const app = express();
 app.use(express.json());
 
-// CORS for kiosk frontend
+// CORS for dashboard (Vercel) and kiosk
 app.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
+});
+
+// Health check (Railway / load balancers)
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'prediction-market-api' });
+});
+app.get('/', (req, res) => {
+  res.redirect(302, '/health');
 });
 
 // GET /api/markets
@@ -151,8 +159,9 @@ app.post('/api/markets/:id/resolve', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Prediction Market API http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Prediction Market API listening on port ${PORT}`);
+  console.log(`  GET  /health`);
   console.log(`  GET  /api/markets`);
   console.log(`  POST /api/markets (body: question, asset, direction, targetPrice?, amount?)`);
   console.log(`  POST /api/markets/:id/resolve (?outcome=WIN|LOSS optional)`);
