@@ -104,6 +104,7 @@ async function startTranscriber(): Promise<{ ok: boolean; error?: string }> {
     transcriber = assemblyai.streaming.transcriber({
       sampleRate: 16_000,
       formatTurns: true,
+      keyterms: ["Molty"],
     });
 
     transcriber.on("turn", (turn) => {

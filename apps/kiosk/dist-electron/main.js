@@ -175,7 +175,8 @@ async function startTranscriber() {
     console.log("[STT] Creating streaming transcriber...");
     transcriber = assemblyai.streaming.transcriber({
       sampleRate: 16e3,
-      formatTurns: true
+      formatTurns: true,
+      keyterms: ["Molty"]
     });
     transcriber.on("turn", (turn) => {
       console.log(

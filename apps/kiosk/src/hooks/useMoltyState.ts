@@ -1,6 +1,23 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useVoice } from "./useVoice";
 
+/** Strip common markdown formatting so captions and TTS read clean text. */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, "")        // code blocks (must come before inline)
+    .replace(/#{1,6}\s+/g, "")             // headings
+    .replace(/\*\*(.+?)\*\*/g, "$1")       // bold
+    .replace(/__(.+?)__/g, "$1")           // bold alt
+    .replace(/\*(.+?)\*/g, "$1")           // italic
+    .replace(/_(.+?)_/g, "$1")             // italic alt
+    .replace(/`(.+?)`/g, "$1")             // inline code
+    .replace(/\[(.+?)\]\(.+?\)/g, "$1")    // links
+    .replace(/^[-*+]\s+/gm, "")            // list bullets
+    .replace(/^\d+\.\s+/gm, "")            // numbered lists
+    .replace(/\n{2,}/g, "\n")              // collapse blank lines
+    .trim();
+}
+
 export function useMoltyState() {
   const [face, setFace] = useState<FaceExpression>("idle");
   const [isTalking, setIsTalking] = useState(false);
@@ -11,6 +28,8 @@ export function useMoltyState() {
   const speakingRef = useRef(false);
   const interruptedRef = useRef(false);
   const responseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const awaitingQueryRef = useRef(false); // true after user says just "Molty" — next utterance is the query
+  const awaitingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [processTrigger, setProcessTrigger] = useState(0);
 
   const { isListening, transcript, setTranscript, pause, resume } =
@@ -19,7 +38,7 @@ export function useMoltyState() {
   // Update face based on voice state
   useEffect(() => {
     if (!processingRef.current && isListening) {
-      setFace("idle");
+      setFace("listening");
     }
   }, [isListening]);
 
@@ -55,7 +74,7 @@ export function useMoltyState() {
       clearTimeout(responseTimeoutRef.current);
       responseTimeoutRef.current = null;
     }
-    setFace("idle");
+    setFace("listening");
     setSubtitle("");
   }, []);
 
@@ -125,7 +144,7 @@ export function useMoltyState() {
         if (processingRef.current) {
           console.log("[Molty] Response timeout — resuming listening");
           processingRef.current = false;
-          setFace("idle");
+          setFace("listening");
           setSubtitle("");
           resume();
           setProcessTrigger((t) => t + 1);
@@ -150,14 +169,67 @@ export function useMoltyState() {
     [pause, resume]
   );
 
-  // ── Handle new transcripts ─────────────────────────────────────────────
+  // ── Handle new transcripts (wake-word gated) ─────────────────────────
 
   useEffect(() => {
     if (!transcript) return;
-    if (processingRef.current) return; // ignore while busy; user can press Stop
+    if (processingRef.current) {
+      setTranscript(null);
+      return; // ignore while busy; user can press Stop
+    }
 
-    processTranscript(transcript);
+    // If we're awaiting a follow-up query after user said just "Molty"
+    if (awaitingQueryRef.current) {
+      awaitingQueryRef.current = false;
+      if (awaitingTimeoutRef.current) {
+        clearTimeout(awaitingTimeoutRef.current);
+        awaitingTimeoutRef.current = null;
+      }
+      setSubtitle("");
+      processTranscript(transcript);
+      setTranscript(null);
+      return;
+    }
+
+    // Check for wake word "molty" or common mis-transcriptions (case-insensitive)
+    const lower = transcript.toLowerCase();
+    const wakeWords = ["molty", "malty", "molti", "malti", "multi", "moulty", "moulty", "melty"];
+    let matchIdx = -1;
+    let matchLen = 0;
+    for (const w of wakeWords) {
+      const i = lower.indexOf(w);
+      if (i !== -1) {
+        matchIdx = i;
+        matchLen = w.length;
+        break;
+      }
+    }
+    if (matchIdx === -1) {
+      // No wake word — ignore
+      setTranscript(null);
+      return;
+    }
+
+    // Extract everything after the wake word
+    const query = transcript.slice(matchIdx + matchLen).trim();
     setTranscript(null);
+
+    if (!query) {
+      // User just said "Molty" — acknowledge and wait for the next utterance
+      setFace("listening");
+      setSubtitle("I'm listening...");
+      awaitingQueryRef.current = true;
+      // Auto-reset after 10 seconds if no follow-up comes
+      awaitingTimeoutRef.current = setTimeout(() => {
+        awaitingQueryRef.current = false;
+        awaitingTimeoutRef.current = null;
+        setSubtitle("");
+        setFace("listening");
+      }, 10_000);
+      return;
+    }
+
+    processTranscript(query);
   }, [transcript, processTrigger, processTranscript, setTranscript]);
 
   // ── Listen for OpenClaw chat events (streamed response) ───────────────
@@ -213,7 +285,10 @@ export function useMoltyState() {
           }
           if (textContent) {
             accumulated = textContent; // delta sends full text so far
-            setSubtitle(accumulated);
+            // Show last ~200 chars of stripped text during streaming so captions stay readable
+            const cleaned = stripMarkdown(accumulated);
+            const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
+            setSubtitle(display);
           }
           return;
         }
@@ -228,7 +303,8 @@ export function useMoltyState() {
           }
 
           // Final response — speak it
-          const finalText = textContent || accumulated;
+          const rawFinal = textContent || accumulated;
+          const finalText = stripMarkdown(rawFinal);
           console.log("[Molty] Chat final:", finalText.slice(0, 120));
           currentRunId = null;
           accumulated = "";
@@ -240,7 +316,7 @@ export function useMoltyState() {
               clearTimeout(responseTimeoutRef.current);
               responseTimeoutRef.current = null;
             }
-            setFace("idle");
+            setFace("listening");
             setSubtitle("");
             resume();
             setProcessTrigger((t) => t + 1);
@@ -267,7 +343,7 @@ export function useMoltyState() {
             clearTimeout(responseTimeoutRef.current);
             responseTimeoutRef.current = null;
           }
-          setFace("idle");
+          setFace("listening");
           setSubtitle("");
           resume();
           setProcessTrigger((t) => t + 1);
@@ -278,6 +354,14 @@ export function useMoltyState() {
           // If we triggered the abort ourselves, don't show an error
           if (interruptedRef.current) {
             console.log("[Molty] Chat aborted (user-initiated interrupt)");
+            currentRunId = null;
+            accumulated = "";
+            return;
+          }
+
+          // Ignore stale error/aborted events that arrive when we're not processing
+          if (!processingRef.current) {
+            console.log("[Molty] Ignoring stale chat error/aborted (not processing)");
             currentRunId = null;
             accumulated = "";
             return;
@@ -295,7 +379,7 @@ export function useMoltyState() {
           setFace("error");
           setSubtitle(errMsg);
           setTimeout(() => {
-            setFace("idle");
+            setFace("listening");
             setSubtitle("");
             resume();
             setProcessTrigger((t) => t + 1);
@@ -365,7 +449,7 @@ export function useMoltyState() {
   }, [interrupt, resume]);
 
   // Derive "busy" from reactive state (face is "thinking" while waiting, isTalking while speaking)
-  const isBusy = face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error");
+  const isBusy = face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error" && face !== "listening");
 
   return {
     face, isTalking, subtitle, isReady, isListening, isConnected,
