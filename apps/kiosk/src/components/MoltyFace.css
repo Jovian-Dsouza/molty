@@ -1,0 +1,423 @@
+/* ── Container ────────────────────────────────────────────────────────── */
+
+.molty-face {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  background: #0b0f14;
+}
+
+.face-bg {
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  transition: background 0.6s ease;
+  background: radial-gradient(circle at 50% 45%, rgba(255, 107, 74, 0.15) 0%, transparent 70%);
+}
+
+.face-container {
+  position: relative;
+  width: 220px;
+  height: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+}
+
+/* ── Eyes ──────────────────────────────────────────────────────────────── */
+
+.eyes {
+  display: flex;
+  gap: 48px;
+  align-items: center;
+  justify-content: center;
+}
+
+.eye {
+  width: 44px;
+  height: 44px;
+  background: #f0ebe6;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.pupil {
+  width: 18px;
+  height: 18px;
+  background: #1a1a2e;
+  border-radius: 50%;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Mouth ─────────────────────────────────────────────────────────────── */
+
+.mouth {
+  width: 40px;
+  height: 20px;
+  border: 3px solid #f0ebe6;
+  border-top: none;
+  border-radius: 0 0 40px 40px;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Subtitle ──────────────────────────────────────────────────────────── */
+
+.face-subtitle {
+  position: absolute;
+  bottom: 24px;
+  left: 16px;
+  right: 16px;
+  text-align: center;
+  font-size: 0.82rem;
+  color: rgba(240, 235, 230, 0.7);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 8px 14px;
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+  line-height: 1.4;
+}
+
+/* ── IDLE ──────────────────────────────────────────────────────────────── */
+
+.face-idle .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 107, 74, 0.1) 0%, transparent 70%);
+}
+
+.face-idle .eye {
+  animation: blink 4s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 90%, 100% { height: 44px; }
+  95% { height: 4px; border-radius: 22px; }
+}
+
+/* ── LISTENING ─────────────────────────────────────────────────────────── */
+
+.face-listening .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(70, 217, 133, 0.2) 0%, transparent 70%);
+}
+
+.face-listening .eye {
+  width: 50px;
+  height: 54px;
+  animation: none;
+}
+
+.face-listening .pupil {
+  width: 22px;
+  height: 22px;
+}
+
+.face-listening .mouth {
+  width: 20px;
+  height: 10px;
+  border-radius: 0 0 20px 20px;
+}
+
+/* ── THINKING ──────────────────────────────────────────────────────────── */
+
+.face-thinking .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 183, 77, 0.2) 0%, transparent 70%);
+}
+
+.face-thinking .eye {
+  height: 10px;
+  border-radius: 22px;
+  animation: none;
+}
+
+.face-thinking .pupil {
+  height: 6px;
+  width: 12px;
+  border-radius: 6px;
+}
+
+.face-thinking .eye.left {
+  transform: translateY(-4px);
+}
+
+.face-thinking .eye.right {
+  transform: translateY(4px);
+}
+
+.face-thinking .mouth {
+  width: 30px;
+  height: 3px;
+  border: none;
+  background: #f0ebe6;
+  border-radius: 2px;
+}
+
+/* ── EXCITED ───────────────────────────────────────────────────────────── */
+
+.face-excited .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 209, 102, 0.25) 0%, transparent 70%);
+}
+
+.face-excited .eye {
+  width: 52px;
+  height: 52px;
+  animation: excited-bounce 0.5s ease-in-out infinite alternate;
+}
+
+.face-excited .pupil {
+  width: 12px;
+  height: 12px;
+  background: #ff6b4a;
+}
+
+.face-excited .mouth {
+  width: 50px;
+  height: 25px;
+  border-width: 3px;
+  border-radius: 0 0 50px 50px;
+}
+
+@keyframes excited-bounce {
+  from { transform: translateY(0); }
+  to { transform: translateY(-4px); }
+}
+
+/* ── WATCHING ──────────────────────────────────────────────────────────── */
+
+.face-watching .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 183, 77, 0.15) 0%, transparent 70%);
+}
+
+.face-watching .eye {
+  width: 42px;
+  height: 42px;
+  animation: watching-dart 2s ease-in-out infinite;
+}
+
+.face-watching .pupil {
+  animation: watching-pupil 2s ease-in-out infinite;
+}
+
+.face-watching .mouth {
+  width: 30px;
+  height: 3px;
+  border: none;
+  background: #f0ebe6;
+  border-radius: 2px;
+}
+
+@keyframes watching-dart {
+  0%, 100% { transform: none; }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+@keyframes watching-pupil {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+/* ── WINNING ───────────────────────────────────────────────────────────── */
+
+.face-winning .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(70, 217, 133, 0.3) 0%, transparent 70%);
+}
+
+.face-winning .eye {
+  height: 14px;
+  border-radius: 22px 22px 0 0;
+  animation: none;
+}
+
+.face-winning .pupil {
+  display: none;
+}
+
+.face-winning .mouth {
+  width: 50px;
+  height: 25px;
+  border-radius: 0 0 50px 50px;
+}
+
+/* ── LOSING ────────────────────────────────────────────────────────────── */
+
+.face-losing .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 107, 107, 0.15) 0%, transparent 70%);
+}
+
+.face-losing .eye {
+  width: 38px;
+  height: 48px;
+  border-radius: 50% 50% 50% 50% / 40% 40% 60% 60%;
+  animation: none;
+}
+
+.face-losing .pupil {
+  width: 14px;
+  height: 14px;
+  transform: translateY(4px);
+}
+
+.face-losing .mouth {
+  width: 40px;
+  height: 20px;
+  border-top: 3px solid #f0ebe6;
+  border-bottom: none;
+  border-left: 3px solid #f0ebe6;
+  border-right: 3px solid #f0ebe6;
+  border-radius: 40px 40px 0 0;
+}
+
+/* ── CELEBRATING ───────────────────────────────────────────────────────── */
+
+.face-celebrating .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 209, 102, 0.35) 0%, transparent 70%);
+  animation: celebrate-bg 0.6s ease-in-out infinite alternate;
+}
+
+.face-celebrating .eye {
+  height: 16px;
+  border-radius: 22px 22px 0 0;
+  background: #ffd166;
+  animation: celebrate-eyes 0.4s ease-in-out infinite alternate;
+}
+
+.face-celebrating .pupil {
+  display: none;
+}
+
+.face-celebrating .mouth {
+  width: 60px;
+  height: 30px;
+  border-radius: 0 0 60px 60px;
+  border-width: 3px;
+}
+
+.face-celebrating .face-container {
+  animation: celebrate-bounce 0.3s ease-in-out infinite alternate;
+}
+
+@keyframes celebrate-bg {
+  from { opacity: 0.5; }
+  to { opacity: 0.8; }
+}
+
+@keyframes celebrate-eyes {
+  from { transform: scaleY(1); }
+  to { transform: scaleY(1.2); }
+}
+
+@keyframes celebrate-bounce {
+  from { transform: translateY(0) rotate(-2deg); }
+  to { transform: translateY(-6px) rotate(2deg); }
+}
+
+/* ── DYING ─────────────────────────────────────────────────────────────── */
+
+.face-dying .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 107, 107, 0.25) 0%, transparent 70%);
+}
+
+.face-dying .eye {
+  width: 40px;
+  height: 40px;
+  background: transparent;
+  border: none;
+  animation: none;
+  overflow: visible;
+}
+
+.face-dying .pupil {
+  display: none;
+}
+
+/* X eyes using pseudo-elements */
+.face-dying .eye::before,
+.face-dying .eye::after {
+  content: '';
+  position: absolute;
+  width: 32px;
+  height: 4px;
+  background: #ff6b6b;
+  border-radius: 2px;
+  top: 50%;
+  left: 50%;
+}
+
+.face-dying .eye::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.face-dying .eye::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.face-dying .mouth {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid #f0ebe6;
+  border-top: 3px solid #f0ebe6;
+}
+
+.face-dying .face-container {
+  animation: dying-spin 3s linear infinite;
+  opacity: 0.8;
+}
+
+@keyframes dying-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ── ERROR ─────────────────────────────────────────────────────────────── */
+
+.face-error .face-bg {
+  background: radial-gradient(circle at 50% 45%, rgba(255, 107, 107, 0.2) 0%, transparent 70%);
+}
+
+.face-error .eye {
+  animation: error-shake 0.3s ease-in-out infinite alternate;
+  background: #ff6b6b;
+}
+
+.face-error .pupil {
+  width: 16px;
+  height: 16px;
+  background: #fff;
+}
+
+.face-error .mouth {
+  width: 40px;
+  height: 20px;
+  border-top: 3px solid #f0ebe6;
+  border-bottom: none;
+  border-left: 3px solid #f0ebe6;
+  border-right: 3px solid #f0ebe6;
+  border-radius: 40px 40px 0 0;
+}
+
+@keyframes error-shake {
+  from { transform: translateX(-3px); }
+  to { transform: translateX(3px); }
+}
+
+/* ── TALKING (overlay on any expression) ───────────────────────────────── */
+
+.talking .mouth {
+  animation: talk-mouth 0.25s ease-in-out infinite alternate;
+}
+
+@keyframes talk-mouth {
+  from { transform: scaleY(0.6); }
+  to { transform: scaleY(1.4); }
+}

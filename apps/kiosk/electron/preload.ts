@@ -1,9 +1,7 @@
 import { ipcRenderer, contextBridge } from 'electron'
 
-type OpenClawStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
-
 type OpenClawStatusPayload = {
-  status: OpenClawStatus
+  status: 'disconnected' | 'connecting' | 'connected' | 'error'
   error?: string | null
 }
 
@@ -27,6 +25,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
 })
 
 contextBridge.exposeInMainWorld('openclaw', {
+  // OpenClaw gateway
   connect: () => ipcRenderer.invoke('openclaw:connect') as Promise<OpenClawStatusPayload>,
   disconnect: () => ipcRenderer.invoke('openclaw:disconnect') as Promise<OpenClawStatusPayload>,
   getStatus: () => ipcRenderer.invoke('openclaw:get-status') as Promise<OpenClawStatusPayload>,
@@ -35,4 +34,11 @@ contextBridge.exposeInMainWorld('openclaw', {
     subscribe<OpenClawStatusPayload>('openclaw:status', handler),
   onMessage: (handler: (payload: OpenClawMessagePayload) => void) =>
     subscribe<OpenClawMessagePayload>('openclaw:message', handler),
+
+  // AssemblyAI streaming STT
+  startListening: () => ipcRenderer.invoke('openclaw:start-listening') as Promise<{ ok: boolean; error?: string }>,
+  stopListening: () => ipcRenderer.invoke('openclaw:stop-listening') as Promise<{ ok: boolean; error?: string }>,
+  sendAudioChunk: (pcmData: ArrayBuffer) => ipcRenderer.send('openclaw:audio-chunk', pcmData),
+  onTranscript: (handler: (text: string) => void) =>
+    subscribe<string>('openclaw:transcript', handler),
 })

@@ -1,4 +1,7 @@
+import { useState } from 'react'
 import './App.css'
+import { MoltyFace } from './components/MoltyFace'
+import { useMoltyState } from './hooks/useMoltyState'
 import { StatusHero } from './components/StatusHero'
 import { ConnectionPanel } from './components/ConnectionPanel'
 import { SendPanel } from './components/SendPanel'
@@ -6,49 +9,44 @@ import { LogPanel } from './components/LogPanel'
 import { useOpenClaw } from './hooks/useOpenClaw'
 
 function App() {
-  const {
-    status,
-    statusLabel,
-    logs,
-    draft,
-    setDraft,
-    isSending,
-    isConnected,
-    isConnecting,
-    handleConnect,
-    handleDisconnect,
-    handleSend,
-    resetDraft,
-    clearLogs,
-  } = useOpenClaw()
+  const [showDebug, setShowDebug] = useState(false)
+  const molty = useMoltyState()
+  const debug = useOpenClaw()
+
+  if (showDebug) {
+    return (
+      <div className="app">
+        <button className="chip" onClick={() => setShowDebug(false)}>
+          Back to Face
+        </button>
+        <StatusHero
+          status={debug.status}
+          isConnected={debug.isConnected}
+          isConnecting={debug.isConnecting}
+          onConnect={debug.handleConnect}
+          onDisconnect={debug.handleDisconnect}
+        />
+        <ConnectionPanel status={debug.status} statusLabel={debug.statusLabel} />
+        <SendPanel
+          draft={debug.draft}
+          isSending={debug.isSending}
+          isConnected={debug.isConnected}
+          onDraftChange={debug.setDraft}
+          onReset={debug.resetDraft}
+          onSend={debug.handleSend}
+        />
+        <LogPanel logs={debug.logs} onClear={debug.clearLogs} />
+      </div>
+    )
+  }
 
   return (
-    <div className="app">
-      <StatusHero
-        status={status}
-        isConnected={isConnected}
-        isConnecting={isConnecting}
-        onConnect={handleConnect}
-        onDisconnect={handleDisconnect}
+    <div className="app-face" onDoubleClick={() => setShowDebug(true)}>
+      <MoltyFace
+        expression={molty.face}
+        isTalking={molty.isTalking}
+        subtitle={molty.subtitle || undefined}
       />
-
-      <ConnectionPanel status={status} statusLabel={statusLabel} />
-
-      <SendPanel
-        draft={draft}
-        isSending={isSending}
-        isConnected={isConnected}
-        onDraftChange={setDraft}
-        onReset={resetDraft}
-        onSend={handleSend}
-      />
-
-      <LogPanel logs={logs} onClear={clearLogs} />
-
-      <footer className="hint">
-        Set <code>OPENCLAW_GATEWAY_TOKEN</code> and optional{' '}
-        <code>VITE_OPENCLAW_GATEWAY_URL</code> before launching.
-      </footer>
     </div>
   )
 }

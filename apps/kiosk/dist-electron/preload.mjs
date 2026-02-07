@@ -12,10 +12,16 @@ electron.contextBridge.exposeInMainWorld("ipcRenderer", {
   invoke: (...args) => electron.ipcRenderer.invoke(...args)
 });
 electron.contextBridge.exposeInMainWorld("openclaw", {
+  // OpenClaw gateway
   connect: () => electron.ipcRenderer.invoke("openclaw:connect"),
   disconnect: () => electron.ipcRenderer.invoke("openclaw:disconnect"),
   getStatus: () => electron.ipcRenderer.invoke("openclaw:get-status"),
   send: (payload) => electron.ipcRenderer.invoke("openclaw:send", payload),
   onStatus: (handler) => subscribe("openclaw:status", handler),
-  onMessage: (handler) => subscribe("openclaw:message", handler)
+  onMessage: (handler) => subscribe("openclaw:message", handler),
+  // AssemblyAI streaming STT
+  startListening: () => electron.ipcRenderer.invoke("openclaw:start-listening"),
+  stopListening: () => electron.ipcRenderer.invoke("openclaw:stop-listening"),
+  sendAudioChunk: (pcmData) => electron.ipcRenderer.send("openclaw:audio-chunk", pcmData),
+  onTranscript: (handler) => subscribe("openclaw:transcript", handler)
 });

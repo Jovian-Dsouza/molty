@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
 import { Buffer } from 'node:buffer'
+import { AssemblyAI } from 'assemblyai'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -47,8 +48,8 @@ type OpenClawMessagePayload = {
 type WebSocketLike = {
   send: (data: string | ArrayBuffer | Buffer) => void
   close: () => void
-  addEventListener?: (event: string, handler: (...args: any[]) => void) => void
-  on?: (event: string, handler: (...args: any[]) => void) => void
+  addEventListener?: (event: string, handler: (...args: unknown[]) => void) => void
+  on?: (event: string, handler: (...args: unknown[]) => void) => void
 }
 
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? 'wss://molty.somehow.dev/'
@@ -59,6 +60,72 @@ let wsStatus: OpenClawStatus = 'disconnected'
 let wsError: string | null = null
 
 let win: BrowserWindow | null
+
+// ── AssemblyAI Streaming STT ──────────────────────────────────────────────
+
+const assemblyai = process.env.ASSEMBLYAI_API_KEY
+  ? new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY })
+  : null
+
+type StreamingTranscriberInstance = ReturnType<NonNullable<typeof assemblyai>['streaming']['transcriber']>
+let transcriber: StreamingTranscriberInstance | null = null
+
+async function startTranscriber(): Promise<{ ok: boolean; error?: string }> {
+  if (!assemblyai) {
+    return { ok: false, error: 'Missing ASSEMBLYAI_API_KEY' }
+  }
+  if (transcriber) {
+    return { ok: true } // already running
+  }
+
+  try {
+    transcriber = assemblyai.streaming.transcriber({
+      sampleRate: 16_000,
+      formatTurns: true,
+    })
+
+    transcriber.on('turn', (turn) => {
+      if (turn.end_of_turn && turn.transcript.trim()) {
+        for (const window of BrowserWindow.getAllWindows()) {
+          window.webContents.send('openclaw:transcript', turn.transcript)
+        }
+      }
+    })
+
+    transcriber.on('error', (err) => {
+      console.error('[STT] Error:', err.message)
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('openclaw:transcript-error', err.message)
+      }
+    })
+
+    transcriber.on('close', () => {
+      transcriber = null
+    })
+
+    await transcriber.connect()
+    return { ok: true }
+  } catch (err: unknown) {
+    transcriber = null
+    const message = err instanceof Error ? err.message : 'Failed to start transcriber'
+    return { ok: false, error: message }
+  }
+}
+
+async function stopTranscriber(): Promise<{ ok: boolean; error?: string }> {
+  if (!transcriber) {
+    return { ok: true }
+  }
+  try {
+    await transcriber.close()
+  } catch {
+    // best-effort close
+  }
+  transcriber = null
+  return { ok: true }
+}
+
+// ── OpenClaw Gateway ──────────────────────────────────────────────────────
 
 function normalizeGatewayUrl(rawUrl: string) {
   if (rawUrl.startsWith('https://')) return `wss://${rawUrl.slice(8)}`
@@ -104,7 +171,7 @@ function setStatus(next: OpenClawStatus, error: string | null = null) {
 function toText(data: unknown) {
   if (typeof data === 'string') return data
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
-  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer).toString('utf8')
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer as ArrayBuffer).toString('utf8')
   if (Buffer.isBuffer(data)) return data.toString('utf8')
   try {
     return JSON.stringify(data)
@@ -132,8 +199,9 @@ function attachSocketHandlers(socket: WebSocketLike) {
     broadcastMessage('system', 'Gateway error')
   }
 
-  const handleMessage = (eventOrData: any) => {
-    const data = eventOrData?.data ?? eventOrData
+  const handleMessage = (...args: unknown[]) => {
+    const eventOrData = args[0]
+    const data = (eventOrData as { data?: unknown })?.data ?? eventOrData
     broadcastMessage('in', toText(data))
   }
 
@@ -164,7 +232,7 @@ function connectGateway(): OpenClawStatusPayload {
     return getStatusPayload()
   }
 
-  const WebSocketCtor = (globalThis as any).WebSocket as (new (url: string) => WebSocketLike) | undefined
+  const WebSocketCtor = (globalThis as Record<string, unknown>).WebSocket as (new (url: string) => WebSocketLike) | undefined
   if (!WebSocketCtor) {
     setStatus('error', 'WebSocket not available in main process')
     return getStatusPayload()
@@ -214,6 +282,8 @@ function sendGateway(payload: unknown): { ok: boolean; error?: string } {
   }
 }
 
+// ── Window Creation ───────────────────────────────────────────────────────
+
 function createWindow() {
   const isKiosk = process.argv.includes('--kiosk') || process.env.KIOSK === 'true'
 
@@ -230,6 +300,17 @@ function createWindow() {
     },
   })
 
+  // Auto-grant microphone permission (required for getUserMedia in Electron)
+  win.webContents.session.setPermissionRequestHandler(
+    (_webContents, permission, callback) => {
+      if (permission === 'media') {
+        callback(true)
+        return
+      }
+      callback(false)
+    }
+  )
+
   if (isKiosk) {
     win.setMenu(null)
   }
@@ -245,12 +326,30 @@ function createWindow() {
   })
 }
 
+// ── IPC Handlers ──────────────────────────────────────────────────────────
+
+// OpenClaw gateway
 ipcMain.handle('openclaw:connect', () => connectGateway())
 ipcMain.handle('openclaw:disconnect', () => disconnectGateway())
 ipcMain.handle('openclaw:get-status', () => getStatusPayload())
 ipcMain.handle('openclaw:send', (_event, payload) => sendGateway(payload))
 
-app.on('before-quit', () => disconnectGateway())
+// AssemblyAI streaming STT
+ipcMain.handle('openclaw:start-listening', () => startTranscriber())
+ipcMain.handle('openclaw:stop-listening', () => stopTranscriber())
+ipcMain.on('openclaw:audio-chunk', (_event, pcmData: ArrayBuffer) => {
+  if (transcriber) {
+    const buf = Buffer.from(pcmData)
+    transcriber.sendAudio(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+  }
+})
+
+// ── App Lifecycle ─────────────────────────────────────────────────────────
+
+app.on('before-quit', () => {
+  disconnectGateway()
+  stopTranscriber()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
