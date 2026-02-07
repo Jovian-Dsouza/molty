@@ -1,6 +1,17 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useVoice } from "./useVoice";
 
+/** Words that mean "stop talking" without being treated as a new query. */
+const STOP_WORDS = new Set([
+  "stop", "shut up", "quiet", "silence", "enough", "okay stop",
+  "ok stop", "be quiet", "hush", "cancel", "abort", "never mind",
+  "nevermind", "hold on",
+]);
+
+function isStopPhrase(text: string): boolean {
+  return STOP_WORDS.has(text.trim().toLowerCase().replace(/[.!?,]+$/g, ""));
+}
+
 export function useMoltyState() {
   const [face, setFace] = useState<FaceExpression>("idle");
   const [isTalking, setIsTalking] = useState(false);
@@ -8,6 +19,8 @@ export function useMoltyState() {
   const [isConnected, setIsConnected] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const processingRef = useRef(false);
+  const speakingRef = useRef(false);
+  const interruptedRef = useRef(false);
   const responseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [processTrigger, setProcessTrigger] = useState(0);
 
@@ -21,14 +34,54 @@ export function useMoltyState() {
     }
   }, [isListening]);
 
-  // Speak text using browser SpeechSynthesis
-  const speak = useCallback((text: string): Promise<void> => {
+  // ── Interrupt: cancel TTS, abort gateway run, reset state ─────────────
+
+  const interrupt = useCallback(() => {
+    console.log("[Molty] Interrupting current response");
+
+    // Cancel browser TTS immediately
+    if ("speechSynthesis" in window) {
+      speechSynthesis.cancel();
+    }
+
+    // Mark as interrupted so the speak() caller knows to bail
+    interruptedRef.current = true;
+
+    // Abort the current run on the gateway
+    const abortReq = {
+      type: "req",
+      id: `abort-${Date.now()}`,
+      method: "chat.abort",
+      params: { sessionKey: "main" },
+    };
+    window.openclaw.send(abortReq).catch(() => {
+      // best-effort abort
+    });
+
+    // Reset all processing state
+    processingRef.current = false;
+    speakingRef.current = false;
+    setIsTalking(false);
+    if (responseTimeoutRef.current) {
+      clearTimeout(responseTimeoutRef.current);
+      responseTimeoutRef.current = null;
+    }
+    setFace("idle");
+    setSubtitle("");
+  }, []);
+
+  // ── Speak with interruption support ───────────────────────────────────
+
+  const speak = useCallback((text: string): Promise<"done" | "interrupted"> => {
     return new Promise((resolve) => {
       if (!("speechSynthesis" in window)) {
         console.log("[Molty] SpeechSynthesis not available, skipping TTS");
-        resolve();
+        resolve("done");
         return;
       }
+
+      interruptedRef.current = false;
+      speakingRef.current = true;
 
       console.log("[Molty] Speaking:", text.slice(0, 80));
       const utterance = new SpeechSynthesisUtterance(text);
@@ -37,27 +90,41 @@ export function useMoltyState() {
       utterance.volume = 1.0;
 
       utterance.onend = () => {
-        console.log("[Molty] Finished speaking");
-        resolve();
+        speakingRef.current = false;
+        if (interruptedRef.current) {
+          console.log("[Molty] Speech ended (was interrupted)");
+          resolve("interrupted");
+        } else {
+          console.log("[Molty] Finished speaking");
+          resolve("done");
+        }
       };
       utterance.onerror = (e) => {
-        console.error("[Molty] TTS error:", e.error);
-        resolve();
+        speakingRef.current = false;
+        if (e.error === "canceled" || interruptedRef.current) {
+          console.log("[Molty] Speech cancelled (interrupted)");
+          resolve("interrupted");
+        } else {
+          console.error("[Molty] TTS error:", e.error);
+          resolve("done");
+        }
       };
 
       speechSynthesis.speak(utterance);
     });
   }, []);
 
-  // Process a transcript: send to OpenClaw via chat.send RPC, wait for response
+  // ── Process a transcript ──────────────────────────────────────────────
+
   const processTranscript = useCallback(
     async (text: string) => {
       if (processingRef.current) return;
       processingRef.current = true;
+      interruptedRef.current = false;
 
       console.log("[Molty] Processing transcript:", text);
 
-      // Pause mic to avoid echo
+      // Pause mic while waiting for response (avoid sending silence to transcriber)
       pause();
       setFace("thinking");
       setSubtitle(text);
@@ -94,15 +161,45 @@ export function useMoltyState() {
     [pause, resume]
   );
 
-  // When a new transcript arrives (or we just finished handling one), process it
-  useEffect(() => {
-    if (transcript && !processingRef.current) {
-      processTranscript(transcript);
-      setTranscript(null);
-    }
-  }, [transcript, processTrigger, processTranscript, setTranscript]);
+  // ── Handle new transcripts (including interruptions) ──────────────────
 
-  // Listen for OpenClaw chat events (streamed response)
+  useEffect(() => {
+    if (!transcript) return;
+
+    // If currently speaking or processing, this is an interruption
+    if (processingRef.current || speakingRef.current) {
+      console.log("[Molty] Interrupt detected:", transcript);
+      const wasStop = isStopPhrase(transcript);
+      interrupt();
+
+      // Resume mic
+      resume();
+
+      if (wasStop) {
+        // Just a stop command — go back to idle listening
+        console.log("[Molty] Stop phrase — returning to idle");
+        setTranscript(null);
+        setProcessTrigger((t) => t + 1);
+      } else {
+        // User said something new — process it as a new query after a brief delay
+        // (delay lets the abort settle before sending a new chat.send)
+        console.log("[Molty] Interruption with new query — processing:", transcript);
+        const newText = transcript;
+        setTranscript(null);
+        setTimeout(() => {
+          processTranscript(newText);
+        }, 300);
+      }
+      return;
+    }
+
+    // Normal case: not processing, process the transcript
+    processTranscript(transcript);
+    setTranscript(null);
+  }, [transcript, processTrigger, processTranscript, setTranscript, interrupt, resume]);
+
+  // ── Listen for OpenClaw chat events (streamed response) ───────────────
+
   useEffect(() => {
     // Accumulate streamed text across delta events for the current run
     let currentRunId: string | null = null;
@@ -156,11 +253,18 @@ export function useMoltyState() {
             accumulated = textContent; // delta sends full text so far
             setSubtitle(accumulated);
           }
-          console.log(`[Molty] Chat delta (seq=${chatPayload.seq}): ${accumulated.slice(0, 80)}...`);
           return;
         }
 
         if (state === "final") {
+          // If we were interrupted, ignore the final event
+          if (interruptedRef.current) {
+            console.log("[Molty] Chat final ignored (was interrupted)");
+            currentRunId = null;
+            accumulated = "";
+            return;
+          }
+
           // Final response — speak it
           const finalText = textContent || accumulated;
           console.log("[Molty] Chat final:", finalText.slice(0, 120));
@@ -184,8 +288,17 @@ export function useMoltyState() {
           setSubtitle(finalText);
           setIsTalking(true);
 
-          await speak(finalText);
+          // Resume mic BEFORE speaking so the user can interrupt
+          resume();
 
+          const result = await speak(finalText);
+
+          // If interrupted, the interrupt() handler already reset everything
+          if (result === "interrupted") {
+            return;
+          }
+
+          // Normal completion
           setIsTalking(false);
           processingRef.current = false;
           if (responseTimeoutRef.current) {
@@ -194,14 +307,19 @@ export function useMoltyState() {
           }
           setFace("idle");
           setSubtitle("");
-
-          // Resume mic listening
-          resume();
           setProcessTrigger((t) => t + 1);
           return;
         }
 
         if (state === "error" || state === "aborted") {
+          // If we triggered the abort ourselves, don't show an error
+          if (interruptedRef.current) {
+            console.log("[Molty] Chat aborted (user-initiated interrupt)");
+            currentRunId = null;
+            accumulated = "";
+            return;
+          }
+
           const errMsg = chatPayload.errorMessage ?? state;
           console.error("[Molty] Chat error/aborted:", errMsg);
           currentRunId = null;
@@ -224,7 +342,7 @@ export function useMoltyState() {
       }
     });
     return off;
-  }, [speak, resume]);
+  }, [speak, resume, interrupt]);
 
   // Listen for connection status changes
   useEffect(() => {
