@@ -160,7 +160,7 @@ async function stopTranscriber(): Promise<{ ok: boolean; error?: string }> {
   return { ok: true };
 }
 
-// ── Hume AI TTS (Octave) ─────────────────────────────────────────────────
+// ── Hume AI TTS (Octave) — Streaming ─────────────────────────────────────
 
 const HUME_API_KEY = process.env.HUME_API_KEY;
 // Optional: set a named voice from Hume's Voice Library (e.g. "Dacher", "Ava Song").
@@ -172,16 +172,34 @@ const HUME_VOICE_DESCRIPTION =
   process.env.HUME_VOICE_DESCRIPTION ||
   "Upbeat, enthusiastic, and playful masculine voice with high energy. Speaks quickly and expressively, like an excited robot mascot. Occasionally dramatic.";
 
-async function humeSynthesize(
-  text: string
-): Promise<{ ok: boolean; audio?: string; error?: string }> {
+/** Abort controller for the currently active Hume TTS stream. */
+let humeAbortController: AbortController | null = null;
+
+/**
+ * Stream audio from Hume's TTS API and push each chunk to the renderer
+ * via IPC events so playback can begin immediately.
+ *
+ * Sends:
+ *   hume:audio-chunk (base64 string)  — one per audio snippet
+ *   hume:audio-done                   — stream finished successfully
+ *   hume:audio-error (string)         — stream failed
+ */
+async function humeStreamSpeak(text: string): Promise<{ ok: boolean; error?: string }> {
   if (!HUME_API_KEY) {
     console.log("[Hume TTS] No HUME_API_KEY set, skipping");
+    broadcastHume("hume:audio-error", "Missing HUME_API_KEY");
     return { ok: false, error: "Missing HUME_API_KEY" };
   }
 
+  // Abort any previous synthesis that may still be running
+  if (humeAbortController) {
+    humeAbortController.abort();
+  }
+  humeAbortController = new AbortController();
+  const { signal } = humeAbortController;
+
   try {
-    console.log("[Hume TTS] Synthesizing:", text.slice(0, 100));
+    console.log("[Hume TTS] Streaming:", text.slice(0, 100));
 
     // Build utterance — optionally with a named voice
     const utterance: Record<string, unknown> = {
@@ -196,42 +214,110 @@ async function humeSynthesize(
       utterances: [utterance],
       format: { type: "mp3" },
       num_generations: 1,
+      // Each chunk is its own complete MP3 file so the renderer can decode independently
+      strip_headers: false,
     };
 
-    // If using a named voice, we can opt into instant_mode for lower latency
+    // instant_mode is on by default and requires a named voice
     if (HUME_VOICE_NAME) {
       body.instant_mode = true;
+    } else {
+      body.instant_mode = false;
     }
 
-    const response = await fetch("https://api.hume.ai/v0/tts", {
+    const response = await fetch("https://api.hume.ai/v0/tts/stream/json", {
       method: "POST",
       headers: {
         "X-Hume-Api-Key": HUME_API_KEY,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!response.ok) {
       const errText = await response.text();
       console.error("[Hume TTS] API error:", response.status, errText.slice(0, 300));
-      return { ok: false, error: `Hume API error (${response.status}): ${errText.slice(0, 200)}` };
+      const errMsg = `Hume API error (${response.status}): ${errText.slice(0, 200)}`;
+      broadcastHume("hume:audio-error", errMsg);
+      return { ok: false, error: errMsg };
     }
 
-    const result = (await response.json()) as {
-      generations?: { generation_id?: string; audio?: string }[];
-    };
-    const audio = result.generations?.[0]?.audio;
-    if (!audio) {
-      return { ok: false, error: "No audio in Hume response" };
+    // Read the streaming response — newline-delimited JSON
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let jsonBuf = "";
+    let chunkCount = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      jsonBuf += decoder.decode(value, { stream: true });
+
+      // Split on newlines — each complete line is one JSON object
+      const lines = jsonBuf.split("\n");
+      jsonBuf = lines.pop()!; // keep incomplete trailing line
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const chunk = JSON.parse(trimmed) as { type?: string; audio?: string };
+          if (chunk.type === "audio" && chunk.audio) {
+            chunkCount++;
+            console.log(`[Hume TTS] Chunk #${chunkCount}, base64 len=${chunk.audio.length}`);
+            broadcastHume("hume:audio-chunk", chunk.audio);
+          }
+        } catch {
+          // skip malformed lines
+        }
+      }
     }
 
-    console.log("[Hume TTS] Got audio, length:", audio.length);
-    return { ok: true, audio };
+    // Process any remaining data in the buffer
+    if (jsonBuf.trim()) {
+      try {
+        const chunk = JSON.parse(jsonBuf.trim()) as { type?: string; audio?: string };
+        if (chunk.type === "audio" && chunk.audio) {
+          chunkCount++;
+          console.log(`[Hume TTS] Chunk #${chunkCount} (final), base64 len=${chunk.audio.length}`);
+          broadcastHume("hume:audio-chunk", chunk.audio);
+        }
+      } catch {
+        // skip
+      }
+    }
+
+    console.log(`[Hume TTS] Stream complete — ${chunkCount} chunks sent`);
+    broadcastHume("hume:audio-done");
+    return { ok: true };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Hume TTS failed";
-    console.error("[Hume TTS] Error:", message);
+    if ((err as Error).name === "AbortError") {
+      console.log("[Hume TTS] Stream aborted (interrupted)");
+      return { ok: false, error: "Aborted" };
+    }
+    const message = err instanceof Error ? err.message : "Hume TTS streaming failed";
+    console.error("[Hume TTS] Stream error:", message);
+    broadcastHume("hume:audio-error", message);
     return { ok: false, error: message };
+  } finally {
+    humeAbortController = null;
+  }
+}
+
+/** Abort the current Hume TTS stream (if any). */
+function humeStopSpeaking() {
+  if (humeAbortController) {
+    humeAbortController.abort();
+    humeAbortController = null;
+  }
+}
+
+/** Broadcast an IPC event to all renderer windows. */
+function broadcastHume(channel: string, data?: string) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send(channel, data);
   }
 }
 
@@ -684,8 +770,19 @@ ipcMain.handle("openclaw:disconnect", () => disconnectGateway());
 ipcMain.handle("openclaw:get-status", () => getStatusPayload());
 ipcMain.handle("openclaw:send", (_event, payload) => sendGateway(payload));
 
-// Hume AI TTS
-ipcMain.handle("hume:speak", (_event, text: string) => humeSynthesize(text));
+// Hume AI TTS (streaming)
+ipcMain.handle("hume:speak", (_event, text: string) => {
+  if (!HUME_API_KEY) {
+    return { ok: false, error: "Missing HUME_API_KEY" };
+  }
+  // Start streaming in the background — return immediately so the renderer
+  // can set up its event listeners before the first chunk arrives.
+  humeStreamSpeak(text).catch((err: unknown) => {
+    console.error("[Hume TTS] Unhandled stream error:", err);
+  });
+  return { ok: true };
+});
+ipcMain.handle("hume:stop", () => { humeStopSpeaking(); return { ok: true }; });
 
 // AssemblyAI streaming STT
 ipcMain.handle("openclaw:start-listening", () => startTranscriber());

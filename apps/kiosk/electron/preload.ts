@@ -25,8 +25,22 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
 })
 
 contextBridge.exposeInMainWorld('hume', {
+  // Start streaming TTS — audio arrives via onAudioChunk events
   speak: (text: string) =>
-    ipcRenderer.invoke('hume:speak', text) as Promise<{ ok: boolean; audio?: string; error?: string }>,
+    ipcRenderer.invoke('hume:speak', text) as Promise<{ ok: boolean; error?: string }>,
+  // Abort the current TTS stream
+  stop: () =>
+    ipcRenderer.invoke('hume:stop') as Promise<{ ok: boolean }>,
+  // Streaming events
+  onAudioChunk: (handler: (audioBase64: string) => void) =>
+    subscribe<string>('hume:audio-chunk', handler),
+  onAudioDone: (handler: () => void) => {
+    const listener = () => handler()
+    ipcRenderer.on('hume:audio-done', listener)
+    return () => ipcRenderer.off('hume:audio-done', listener)
+  },
+  onAudioError: (handler: (error: string) => void) =>
+    subscribe<string>('hume:audio-error', handler),
 })
 
 contextBridge.exposeInMainWorld('openclaw', {
