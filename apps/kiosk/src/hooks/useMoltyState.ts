@@ -50,6 +50,8 @@ export function useMoltyState() {
   const responseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const awaitingQueryRef = useRef(false); // true after user says just "Molty" — next utterance is the query
   const awaitingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const conversationModeRef = useRef(false); // true from Start click until Stop — skips wake word entirely
+  const [isInConversation, setIsInConversation] = useState(false);
   const [processTrigger, setProcessTrigger] = useState(0);
 
   const { isListening, transcript, setTranscript, pause, resume } =
@@ -193,7 +195,7 @@ export function useMoltyState() {
     [pause, resume]
   );
 
-  // ── Handle new transcripts (wake-word gated) ─────────────────────────
+  // ── Handle new transcripts ──────────────────────────────────────────
 
   useEffect(() => {
     if (!transcript) return;
@@ -202,7 +204,14 @@ export function useMoltyState() {
       return; // ignore while busy; user can press Stop
     }
 
-    // If we're awaiting a follow-up query after user said just "Molty"
+    // ── Conversation mode (Start→Stop loop): every transcript is a query ──
+    if (conversationModeRef.current) {
+      setTranscript(null);
+      processTranscript(transcript);
+      return;
+    }
+
+    // ── Awaiting follow-up after user said just "Molty" ──
     if (awaitingQueryRef.current) {
       awaitingQueryRef.current = false;
       if (awaitingTimeoutRef.current) {
@@ -215,7 +224,7 @@ export function useMoltyState() {
       return;
     }
 
-    // Check for wake word "molty" or common mis-transcriptions (case-insensitive)
+    // ── Wake-word gated (passive listening) ──
     const lower = transcript.toLowerCase();
     const wakeWords = ["molty", "malty", "molti", "malti", "multi", "moulty", "moulty", "melty"];
     let matchIdx = -1;
@@ -243,7 +252,6 @@ export function useMoltyState() {
       setFace("listening");
       setSubtitle("I'm listening...");
       awaitingQueryRef.current = true;
-      // Auto-reset after 10 seconds if no follow-up comes
       awaitingTimeoutRef.current = setTimeout(() => {
         awaitingQueryRef.current = false;
         awaitingTimeoutRef.current = null;
@@ -369,8 +377,7 @@ export function useMoltyState() {
             return;
           }
 
-          // Normal completion — resume mic and auto-listen for a reply
-          // (user can respond without saying the wake word again)
+          // Normal completion — resume mic for the next turn
           setIsTalking(false);
           processingRef.current = false;
           if (responseTimeoutRef.current) {
@@ -378,19 +385,23 @@ export function useMoltyState() {
             responseTimeoutRef.current = null;
           }
           setFace("listening");
-          setSubtitle("I'm listening...");
           resume();
 
-          // Enter "awaiting query" mode so the next utterance is treated as
-          // a direct reply — no wake word required.
-          awaitingQueryRef.current = true;
-          if (awaitingTimeoutRef.current) clearTimeout(awaitingTimeoutRef.current);
-          awaitingTimeoutRef.current = setTimeout(() => {
-            awaitingQueryRef.current = false;
-            awaitingTimeoutRef.current = null;
-            setSubtitle("");
-            setFace("listening");
-          }, 15_000); // 15 s window for user to reply
+          if (conversationModeRef.current) {
+            // Conversation mode: stay active, no wake word needed, no timeout
+            setSubtitle("I'm listening...");
+          } else {
+            // One-shot (wake-word initiated): give a window for the user to reply
+            setSubtitle("I'm listening...");
+            awaitingQueryRef.current = true;
+            if (awaitingTimeoutRef.current) clearTimeout(awaitingTimeoutRef.current);
+            awaitingTimeoutRef.current = setTimeout(() => {
+              awaitingQueryRef.current = false;
+              awaitingTimeoutRef.current = null;
+              setSubtitle("");
+              setFace("listening");
+            }, 15_000);
+          }
 
           setProcessTrigger((t) => t + 1);
           return;
@@ -477,7 +488,9 @@ export function useMoltyState() {
   // ── Stop button handler ────────────────────────────────────────────────
 
   const stopAndResume = useCallback(() => {
-    console.log("[Molty] Stop button pressed");
+    console.log("[Molty] Stop button pressed — ending conversation mode");
+    conversationModeRef.current = false;
+    setIsInConversation(false);
     interrupt();
     resume();
 
@@ -495,28 +508,23 @@ export function useMoltyState() {
     window.openclaw.send(stopReq).catch(() => {});
   }, [interrupt, resume]);
 
-  // ── Manual start handler (fallback if wake word isn't recognized) ─────
+  // ── Manual start handler — enters persistent conversation mode ───────
 
   const manualStart = useCallback(() => {
-    if (processingRef.current || awaitingQueryRef.current) return;
-    console.log("[Molty] Manual start pressed");
+    if (processingRef.current || conversationModeRef.current) return;
+    console.log("[Molty] Starting conversation mode");
+    conversationModeRef.current = true;
+    setIsInConversation(true);
     setFace("listening");
     setSubtitle("I'm listening...");
-    awaitingQueryRef.current = true;
-    if (awaitingTimeoutRef.current) clearTimeout(awaitingTimeoutRef.current);
-    awaitingTimeoutRef.current = setTimeout(() => {
-      awaitingQueryRef.current = false;
-      awaitingTimeoutRef.current = null;
-      setSubtitle("");
-      setFace("listening");
-    }, 10_000);
-  }, []);
+    resume(); // make sure mic is active
+  }, [resume]);
 
-  // Derive "busy" from reactive state (face is "thinking" while waiting, isTalking while speaking)
-  const isBusy = face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error" && face !== "listening");
+  // Derive "busy" — show Stop button during entire conversation mode or while processing/talking
+  const isBusy = isInConversation || face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error" && face !== "listening");
 
   return {
-    face, isTalking, isSending, subtitle, isReady, isListening, isConnected,
+    face, isTalking, isSending, isInConversation, subtitle, isReady, isListening, isConnected,
     isBusy, stopAndResume, manualStart,
   };
 }
