@@ -38,7 +38,11 @@ declare global {
 
   interface Window {
     hume: {
-      speak: (text: string) => Promise<{ ok: boolean; audio?: string; error?: string }>
+      speak: (text: string) => Promise<{ ok: boolean; error?: string }>
+      stop: () => Promise<{ ok: boolean }>
+      onAudioChunk: (handler: (audioBase64: string) => void) => () => void
+      onAudioDone: (handler: () => void) => () => void
+      onAudioError: (handler: (error: string) => void) => () => void
     }
     openclaw: {
       connect: () => Promise<OpenClawStatusPayload>
