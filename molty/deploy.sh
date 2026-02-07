@@ -23,8 +23,7 @@ fi
 
 EC2_IP="$1"
 PEM_FILE="$2"
-SSH_USER="root"
-REMOTE_SKILLS_DIR="/root/.openclaw/skills"
+SSH_USER="admin"
 LOCAL_SKILLS_DIR="$(cd "$(dirname "$0")" && pwd)/skills"
 
 # ── Validate ──────────────────────────────────────────────────────────────────
@@ -43,6 +42,9 @@ fi
 chmod 400 "$PEM_FILE" 2>/dev/null || true
 
 SSH_OPTS="-i $PEM_FILE -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+
+# Resolve remote path (scp doesn't expand $HOME, so we need the real path)
+REMOTE_SKILLS_DIR="$(ssh $SSH_OPTS "$SSH_USER@$EC2_IP" 'echo $HOME/.openclaw/skills')"
 
 echo "================================================"
 echo "  Deploying Molty Skills to EC2"
@@ -84,8 +86,8 @@ ssh $SSH_OPTS "$SSH_USER@$EC2_IP" "
     openclaw restart 2>/dev/null && echo '  OpenClaw restarted.' || echo '  openclaw restart failed, trying stop+start...' && openclaw stop 2>/dev/null; sleep 2; openclaw start 2>/dev/null && echo '  OpenClaw started.'
   elif systemctl is-active --quiet openclaw 2>/dev/null; then
     systemctl restart openclaw && echo '  OpenClaw service restarted.'
-  elif [ -f /root/.openclaw/pid ]; then
-    kill \$(cat /root/.openclaw/pid) 2>/dev/null || true
+  elif [ -f \$HOME/.openclaw/pid ]; then
+    kill \$(cat \$HOME/.openclaw/pid) 2>/dev/null || true
     sleep 2
     echo '  Killed old process. You may need to start OpenClaw manually.'
   else
