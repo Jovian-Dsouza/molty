@@ -448,11 +448,28 @@ export function useMoltyState() {
     window.openclaw.send(stopReq).catch(() => {});
   }, [interrupt, resume]);
 
+  // ── Manual start handler (fallback if wake word isn't recognized) ─────
+
+  const manualStart = useCallback(() => {
+    if (processingRef.current || awaitingQueryRef.current) return;
+    console.log("[Molty] Manual start pressed");
+    setFace("listening");
+    setSubtitle("I'm listening...");
+    awaitingQueryRef.current = true;
+    if (awaitingTimeoutRef.current) clearTimeout(awaitingTimeoutRef.current);
+    awaitingTimeoutRef.current = setTimeout(() => {
+      awaitingQueryRef.current = false;
+      awaitingTimeoutRef.current = null;
+      setSubtitle("");
+      setFace("listening");
+    }, 10_000);
+  }, []);
+
   // Derive "busy" from reactive state (face is "thinking" while waiting, isTalking while speaking)
   const isBusy = face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error" && face !== "listening");
 
   return {
     face, isTalking, subtitle, isReady, isListening, isConnected,
-    isBusy, stopAndResume,
+    isBusy, stopAndResume, manualStart,
   };
 }
