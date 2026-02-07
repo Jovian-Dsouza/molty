@@ -1,291 +1,324 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
-import { fileURLToPath } from 'node:url'
-import path from 'node:path'
-import { readFileSync } from 'node:fs'
-import { Buffer } from 'node:buffer'
-import { AssemblyAI } from 'assemblyai'
+import { app, BrowserWindow, ipcMain } from "electron";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { readFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { AssemblyAI } from "assemblyai";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-process.env.APP_ROOT = path.join(__dirname, '..')
+process.env.APP_ROOT = path.join(__dirname, "..");
 
 // Load .env into the Electron main process (Vite only injects VITE_* into the renderer)
 try {
-  const envPath = path.join(process.env.APP_ROOT, '.env')
-  const envFile = readFileSync(envPath, 'utf-8')
-  for (const line of envFile.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const idx = trimmed.indexOf('=')
-    if (idx === -1) continue
-    const key = trimmed.slice(0, idx).trim()
-    const value = trimmed.slice(idx + 1).trim()
+  const envPath = path.join(process.env.APP_ROOT, ".env");
+  const envFile = readFileSync(envPath, "utf-8");
+  for (const line of envFile.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx === -1) continue;
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
     if (!process.env[key]) {
-      process.env[key] = value
+      process.env[key] = value;
     }
   }
 } catch {
   // .env file may not exist; that's fine
 }
-export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
-export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
-export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
+export const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
+export const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
+export const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
+  ? path.join(process.env.APP_ROOT, "public")
+  : RENDERER_DIST;
 
-type OpenClawStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+type OpenClawStatus = "disconnected" | "connecting" | "connected" | "error";
 
 type OpenClawStatusPayload = {
-  status: OpenClawStatus
-  error?: string | null
-}
+  status: OpenClawStatus;
+  error?: string | null;
+};
 
 type OpenClawMessagePayload = {
-  direction: 'in' | 'out' | 'system'
-  data: string
-  ts: number
-}
+  direction: "in" | "out" | "system";
+  data: string;
+  ts: number;
+};
 
 type WebSocketLike = {
-  send: (data: string | ArrayBuffer | Buffer) => void
-  close: () => void
-  addEventListener?: (event: string, handler: (...args: unknown[]) => void) => void
-  on?: (event: string, handler: (...args: unknown[]) => void) => void
-}
+  send: (data: string | ArrayBuffer | Buffer) => void;
+  close: () => void;
+  addEventListener?: (
+    event: string,
+    handler: (...args: unknown[]) => void
+  ) => void;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+};
 
-const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? 'wss://molty.somehow.dev/'
-const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN
+const OPENCLAW_GATEWAY_URL =
+  process.env.OPENCLAW_GATEWAY_URL ?? "wss://molty.somehow.dev/";
+const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 
-let ws: WebSocketLike | null = null
-let wsStatus: OpenClawStatus = 'disconnected'
-let wsError: string | null = null
+let ws: WebSocketLike | null = null;
+let wsStatus: OpenClawStatus = "disconnected";
+let wsError: string | null = null;
 
-let win: BrowserWindow | null
+let win: BrowserWindow | null;
 
 // ── AssemblyAI Streaming STT ──────────────────────────────────────────────
 
 const assemblyai = process.env.ASSEMBLYAI_API_KEY
   ? new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY })
-  : null
+  : null;
 
-type StreamingTranscriberInstance = ReturnType<NonNullable<typeof assemblyai>['streaming']['transcriber']>
-let transcriber: StreamingTranscriberInstance | null = null
+type StreamingTranscriberInstance = ReturnType<
+  NonNullable<typeof assemblyai>["streaming"]["transcriber"]
+>;
+let transcriber: StreamingTranscriberInstance | null = null;
 
 async function startTranscriber(): Promise<{ ok: boolean; error?: string }> {
   if (!assemblyai) {
-    return { ok: false, error: 'Missing ASSEMBLYAI_API_KEY' }
+    console.log("[STT] No ASSEMBLYAI_API_KEY set, skipping");
+    return { ok: false, error: "Missing ASSEMBLYAI_API_KEY" };
   }
   if (transcriber) {
-    return { ok: true } // already running
+    console.log("[STT] Transcriber already running");
+    return { ok: true };
   }
 
   try {
+    console.log("[STT] Creating streaming transcriber...");
     transcriber = assemblyai.streaming.transcriber({
       sampleRate: 16_000,
       formatTurns: true,
-    })
+    });
 
-    transcriber.on('turn', (turn) => {
+    transcriber.on("turn", (turn) => {
+      console.log(`[STT] Turn: end_of_turn=${turn.end_of_turn} transcript="${turn.transcript}"`);
       if (turn.end_of_turn && turn.transcript.trim()) {
         for (const window of BrowserWindow.getAllWindows()) {
-          window.webContents.send('openclaw:transcript', turn.transcript)
+          window.webContents.send("openclaw:transcript", turn.transcript);
         }
       }
-    })
+    });
 
-    transcriber.on('error', (err) => {
-      console.error('[STT] Error:', err.message)
+    transcriber.on("error", (err) => {
+      console.error("[STT] Error:", err.message);
       for (const window of BrowserWindow.getAllWindows()) {
-        window.webContents.send('openclaw:transcript-error', err.message)
+        window.webContents.send("openclaw:transcript-error", err.message);
       }
-    })
+    });
 
-    transcriber.on('close', () => {
-      transcriber = null
-    })
+    transcriber.on("close", () => {
+      console.log("[STT] Transcriber closed");
+      transcriber = null;
+    });
 
-    await transcriber.connect()
-    return { ok: true }
+    await transcriber.connect();
+    console.log("[STT] Transcriber connected successfully");
+    return { ok: true };
   } catch (err: unknown) {
-    transcriber = null
-    const message = err instanceof Error ? err.message : 'Failed to start transcriber'
-    return { ok: false, error: message }
+    transcriber = null;
+    const message =
+      err instanceof Error ? err.message : "Failed to start transcriber";
+    console.error("[STT] Failed to start:", message);
+    return { ok: false, error: message };
   }
 }
 
 async function stopTranscriber(): Promise<{ ok: boolean; error?: string }> {
   if (!transcriber) {
-    return { ok: true }
+    return { ok: true };
   }
   try {
-    await transcriber.close()
+    await transcriber.close();
   } catch {
     // best-effort close
   }
-  transcriber = null
-  return { ok: true }
+  transcriber = null;
+  return { ok: true };
 }
 
 // ── OpenClaw Gateway ──────────────────────────────────────────────────────
 
 function normalizeGatewayUrl(rawUrl: string) {
-  if (rawUrl.startsWith('https://')) return `wss://${rawUrl.slice(8)}`
-  if (rawUrl.startsWith('http://')) return `ws://${rawUrl.slice(7)}`
-  return rawUrl
+  if (rawUrl.startsWith("https://")) return `wss://${rawUrl.slice(8)}`;
+  if (rawUrl.startsWith("http://")) return `ws://${rawUrl.slice(7)}`;
+  return rawUrl;
 }
 
 function buildGatewayUrl(): string | null {
-  if (!OPENCLAW_GATEWAY_TOKEN) return null
-  const url = new URL(normalizeGatewayUrl(OPENCLAW_GATEWAY_URL))
-  url.searchParams.set('token', OPENCLAW_GATEWAY_TOKEN)
-  return url.toString()
+  if (!OPENCLAW_GATEWAY_TOKEN) return null;
+  const url = new URL(normalizeGatewayUrl(OPENCLAW_GATEWAY_URL));
+  url.searchParams.set("token", OPENCLAW_GATEWAY_TOKEN);
+  return url.toString();
 }
 
 function getStatusPayload(): OpenClawStatusPayload {
-  return { status: wsStatus, error: wsError }
+  return { status: wsStatus, error: wsError };
 }
 
 function broadcastStatus() {
-  const payload = getStatusPayload()
+  const payload = getStatusPayload();
   for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send('openclaw:status', payload)
+    window.webContents.send("openclaw:status", payload);
   }
 }
 
-function broadcastMessage(direction: OpenClawMessagePayload['direction'], data: string) {
+function broadcastMessage(
+  direction: OpenClawMessagePayload["direction"],
+  data: string
+) {
   const payload: OpenClawMessagePayload = {
     direction,
     data,
     ts: Date.now(),
-  }
+  };
   for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send('openclaw:message', payload)
+    window.webContents.send("openclaw:message", payload);
   }
 }
 
 function setStatus(next: OpenClawStatus, error: string | null = null) {
-  wsStatus = next
-  wsError = error
-  broadcastStatus()
+  wsStatus = next;
+  wsError = error;
+  broadcastStatus();
 }
 
 function toText(data: unknown) {
-  if (typeof data === 'string') return data
-  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
-  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer as ArrayBuffer).toString('utf8')
-  if (Buffer.isBuffer(data)) return data.toString('utf8')
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+  if (ArrayBuffer.isView(data))
+    return Buffer.from(data.buffer as ArrayBuffer).toString("utf8");
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
   try {
-    return JSON.stringify(data)
+    return JSON.stringify(data);
   } catch {
-    return String(data)
+    return String(data);
   }
 }
 
 function attachSocketHandlers(socket: WebSocketLike) {
   const handleOpen = () => {
-    setStatus('connected')
-    broadcastMessage('system', 'Gateway connected')
-  }
+    console.log("[Gateway] Connected");
+    setStatus("connected");
+    broadcastMessage("system", "Gateway connected");
+  };
 
   const handleClose = () => {
-    ws = null
-    if (wsStatus !== 'error') {
-      setStatus('disconnected')
+    console.log("[Gateway] Disconnected");
+    ws = null;
+    if (wsStatus !== "error") {
+      setStatus("disconnected");
     }
-    broadcastMessage('system', 'Gateway disconnected')
-  }
+    broadcastMessage("system", "Gateway disconnected");
+  };
 
   const handleError = () => {
-    setStatus('error', 'Gateway connection failed')
-    broadcastMessage('system', 'Gateway error')
-  }
+    console.error("[Gateway] Connection error");
+    setStatus("error", "Gateway connection failed");
+    broadcastMessage("system", "Gateway error");
+  };
 
   const handleMessage = (...args: unknown[]) => {
-    const eventOrData = args[0]
-    const data = (eventOrData as { data?: unknown })?.data ?? eventOrData
-    broadcastMessage('in', toText(data))
+    const eventOrData = args[0];
+    const data = (eventOrData as { data?: unknown })?.data ?? eventOrData;
+    const text = toText(data);
+    console.log("[Gateway] ← IN:", text.slice(0, 200));
+    broadcastMessage("in", text);
+  };
+
+  if (typeof socket.addEventListener === "function") {
+    socket.addEventListener("open", handleOpen);
+    socket.addEventListener("message", handleMessage);
+    socket.addEventListener("close", handleClose);
+    socket.addEventListener("error", handleError);
+    return;
   }
 
-  if (typeof socket.addEventListener === 'function') {
-    socket.addEventListener('open', handleOpen)
-    socket.addEventListener('message', handleMessage)
-    socket.addEventListener('close', handleClose)
-    socket.addEventListener('error', handleError)
-    return
-  }
-
-  if (typeof socket.on === 'function') {
-    socket.on('open', handleOpen)
-    socket.on('message', handleMessage)
-    socket.on('close', handleClose)
-    socket.on('error', handleError)
+  if (typeof socket.on === "function") {
+    socket.on("open", handleOpen);
+    socket.on("message", handleMessage);
+    socket.on("close", handleClose);
+    socket.on("error", handleError);
   }
 }
 
 function connectGateway(): OpenClawStatusPayload {
-  if (wsStatus === 'connected' || wsStatus === 'connecting') {
-    return getStatusPayload()
+  if (wsStatus === "connected" || wsStatus === "connecting") {
+    return getStatusPayload();
   }
 
-  const url = buildGatewayUrl()
+  const url = buildGatewayUrl();
   if (!url) {
-    setStatus('error', 'Missing OPENCLAW_GATEWAY_TOKEN')
-    return getStatusPayload()
+    setStatus("error", "Missing OPENCLAW_GATEWAY_TOKEN");
+    return getStatusPayload();
   }
 
-  const WebSocketCtor = (globalThis as Record<string, unknown>).WebSocket as (new (url: string) => WebSocketLike) | undefined
+  const WebSocketCtor = (globalThis as Record<string, unknown>).WebSocket as
+    | (new (url: string) => WebSocketLike)
+    | undefined;
   if (!WebSocketCtor) {
-    setStatus('error', 'WebSocket not available in main process')
-    return getStatusPayload()
+    setStatus("error", "WebSocket not available in main process");
+    return getStatusPayload();
   }
 
-  setStatus('connecting')
+  console.log("[Gateway] Connecting to", OPENCLAW_GATEWAY_URL);
+  setStatus("connecting");
   try {
-    ws = new WebSocketCtor(url)
-    attachSocketHandlers(ws)
-    broadcastMessage('system', 'Connecting to OpenClaw gateway...')
-  } catch {
-    setStatus('error', 'Failed to start connection')
+    ws = new WebSocketCtor(url);
+    attachSocketHandlers(ws);
+    broadcastMessage("system", "Connecting to OpenClaw gateway...");
+  } catch (err) {
+    console.error("[Gateway] Failed to connect:", err);
+    setStatus("error", "Failed to start connection");
   }
 
-  return getStatusPayload()
+  return getStatusPayload();
 }
 
 function disconnectGateway(): OpenClawStatusPayload {
   if (ws) {
     try {
-      ws.close()
+      ws.close();
     } catch {
       // best-effort close
     }
-    ws = null
+    ws = null;
   }
 
-  if (wsStatus !== 'disconnected') {
-    setStatus('disconnected')
+  if (wsStatus !== "disconnected") {
+    setStatus("disconnected");
   }
 
-  return getStatusPayload()
+  return getStatusPayload();
 }
 
 function sendGateway(payload: unknown): { ok: boolean; error?: string } {
-  if (!ws || wsStatus !== 'connected') {
-    return { ok: false, error: 'Gateway not connected' }
+  if (!ws || wsStatus !== "connected") {
+    console.log("[Gateway] Cannot send — not connected (status:", wsStatus, ")");
+    return { ok: false, error: "Gateway not connected" };
   }
 
-  const data = typeof payload === 'string' ? payload : JSON.stringify(payload)
+  const data = typeof payload === "string" ? payload : JSON.stringify(payload);
+  console.log("[Gateway] → OUT:", data.slice(0, 200));
   try {
-    ws.send(data)
-    broadcastMessage('out', data)
-    return { ok: true }
-  } catch {
-    return { ok: false, error: 'Failed to send message' }
+    ws.send(data);
+    broadcastMessage("out", data);
+    return { ok: true };
+  } catch (err) {
+    console.error("[Gateway] Send failed:", err);
+    return { ok: false, error: "Failed to send message" };
   }
 }
 
 // ── Window Creation ───────────────────────────────────────────────────────
 
 function createWindow() {
-  const isKiosk = process.argv.includes('--kiosk') || process.env.KIOSK === 'true'
+  const isKiosk =
+    process.argv.includes("--kiosk") || process.env.KIOSK === "true";
 
   win = new BrowserWindow({
     width: 320,
@@ -294,72 +327,74 @@ function createWindow() {
     alwaysOnTop: isKiosk,
     frame: !isKiosk,
     resizable: false,
-    title: 'kiosk',
+    title: "kiosk",
     webPreferences: {
-      preload: path.join(__dirname, 'preload.mjs'),
+      preload: path.join(__dirname, "preload.mjs"),
     },
-  })
+  });
 
   // Auto-grant microphone permission (required for getUserMedia in Electron)
   win.webContents.session.setPermissionRequestHandler(
     (_webContents, permission, callback) => {
-      if (permission === 'media') {
-        callback(true)
-        return
+      if (permission === "media") {
+        callback(true);
+        return;
       }
-      callback(false)
+      callback(false);
     }
-  )
+  );
 
   if (isKiosk) {
-    win.setMenu(null)
+    win.setMenu(null);
   }
 
   if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL)
+    win.loadURL(VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(RENDERER_DIST, 'index.html'))
+    win.loadFile(path.join(RENDERER_DIST, "index.html"));
   }
 
-  win.webContents.once('did-finish-load', () => {
-    win?.webContents.send('openclaw:status', getStatusPayload())
-  })
+  win.webContents.once("did-finish-load", () => {
+    win?.webContents.send("openclaw:status", getStatusPayload());
+  });
 }
 
 // ── IPC Handlers ──────────────────────────────────────────────────────────
 
 // OpenClaw gateway
-ipcMain.handle('openclaw:connect', () => connectGateway())
-ipcMain.handle('openclaw:disconnect', () => disconnectGateway())
-ipcMain.handle('openclaw:get-status', () => getStatusPayload())
-ipcMain.handle('openclaw:send', (_event, payload) => sendGateway(payload))
+ipcMain.handle("openclaw:connect", () => connectGateway());
+ipcMain.handle("openclaw:disconnect", () => disconnectGateway());
+ipcMain.handle("openclaw:get-status", () => getStatusPayload());
+ipcMain.handle("openclaw:send", (_event, payload) => sendGateway(payload));
 
 // AssemblyAI streaming STT
-ipcMain.handle('openclaw:start-listening', () => startTranscriber())
-ipcMain.handle('openclaw:stop-listening', () => stopTranscriber())
-ipcMain.on('openclaw:audio-chunk', (_event, pcmData: ArrayBuffer) => {
+ipcMain.handle("openclaw:start-listening", () => startTranscriber());
+ipcMain.handle("openclaw:stop-listening", () => stopTranscriber());
+ipcMain.on("openclaw:audio-chunk", (_event, pcmData: ArrayBuffer) => {
   if (transcriber) {
-    const buf = Buffer.from(pcmData)
-    transcriber.sendAudio(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+    const buf = Buffer.from(pcmData);
+    transcriber.sendAudio(
+      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+    );
   }
-})
+});
 
 // ── App Lifecycle ─────────────────────────────────────────────────────────
 
-app.on('before-quit', () => {
-  disconnectGateway()
-  stopTranscriber()
-})
+app.on("before-quit", () => {
+  disconnectGateway();
+  stopTranscriber();
+});
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-    win = null
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+    win = null;
   }
-})
+});
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
-})
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
 
-app.whenReady().then(() => createWindow())
+app.whenReady().then(() => createWindow());

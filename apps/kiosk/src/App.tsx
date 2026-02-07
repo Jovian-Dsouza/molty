@@ -40,6 +40,17 @@ function App() {
     )
   }
 
+  if (!molty.isConnected) {
+    return (
+      <div className="app-face" onDoubleClick={() => setShowDebug(true)}>
+        <div className="connecting-screen">
+          <div className="connecting-dot" />
+          <p className="connecting-text">Connecting to OpenClaw...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app-face" onDoubleClick={() => setShowDebug(true)}>
       <MoltyFace
