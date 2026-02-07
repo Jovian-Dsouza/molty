@@ -1,374 +1,192 @@
-import { ipcMain, app, BrowserWindow } from "electron";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, chmodSync } from "node:fs";
-import { Buffer as Buffer$1 } from "node:buffer";
-import { AssemblyAI } from "assemblyai";
-import { generateKeyPairSync, createPrivateKey, sign, createHash, createPublicKey } from "node:crypto";
-const KEY_FILE = "openclaw-device-key.json";
-const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-function getKeyPath(userDataPath) {
-  return path.join(userDataPath, KEY_FILE);
+import { ipcMain as h, app as v, BrowserWindow as S } from "electron";
+import { fileURLToPath as q } from "node:url";
+import d from "node:path";
+import { existsSync as x, readFileSync as C, mkdirSync as F, writeFileSync as V } from "node:fs";
+import { Buffer as T } from "node:buffer";
+import { AssemblyAI as J } from "assemblyai";
+import { generateKeyPairSync as U, createHash as H, createPrivateKey as z, sign as Q } from "node:crypto";
+const X = "openclaw-device-key.json";
+function Z(e) {
+  return d.join(e, X);
 }
-function base64UrlEncode(buf) {
-  return buf.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
-}
-function derivePublicKeyRaw(publicKeyPem) {
-  const key = createPublicKey(publicKeyPem);
-  const spki = key.export({ type: "spki", format: "der" });
-  if (spki.length === ED25519_SPKI_PREFIX.length + 32 && spki.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)) {
-    return spki.subarray(ED25519_SPKI_PREFIX.length);
-  }
-  return spki;
-}
-function fingerprintPublicKey(publicKeyPem) {
-  const raw = derivePublicKeyRaw(publicKeyPem);
-  return createHash("sha256").update(raw).digest("hex");
-}
-function publicKeyRawBase64Url(publicKeyPem) {
-  return base64UrlEncode(derivePublicKeyRaw(publicKeyPem));
-}
-function validateDeviceKey(data) {
-  try {
-    const key = createPrivateKey({ key: data.privateKeyPem, format: "pem" });
-    const testSig = sign(null, Buffer.from("test", "utf-8"), key);
-    return Buffer.isBuffer(testSig) || testSig instanceof Uint8Array;
-  } catch {
-    return false;
-  }
-}
-function getOrCreateDeviceKey(userDataPath) {
-  const keyPath = getKeyPath(userDataPath);
-  if (existsSync(keyPath)) {
+function ee(e) {
+  const n = Z(e);
+  if (x(n))
     try {
-      const raw = readFileSync(keyPath, "utf-8");
-      const data = JSON.parse(raw);
-      if (data.publicKeyPem && data.privateKeyPem) {
-        const derivedId = fingerprintPublicKey(data.publicKeyPem);
-        if (validateDeviceKey({ ...data, deviceId: derivedId })) {
-          if (data.deviceId !== derivedId) {
-            console.log(
-              "[deviceAttestation] Updating deviceId to match public key fingerprint"
-            );
-            const updated = {
-              deviceId: derivedId,
-              publicKeyPem: data.publicKeyPem,
-              privateKeyPem: data.privateKeyPem
-            };
-            try {
-              writeFileSync(keyPath, JSON.stringify(updated, null, 2), {
-                mode: 384
-              });
-            } catch {
-            }
-          }
-          return {
-            deviceId: derivedId,
-            publicKeyPem: data.publicKeyPem,
-            privateKeyPem: data.privateKeyPem
-          };
-        }
-        console.warn(
-          "[deviceAttestation] Persisted key is corrupted, regenerating..."
-        );
-      }
+      const a = C(n, "utf-8"), y = JSON.parse(a);
+      if (y.publicKeyBase64 && y.privateKeyPem && y.deviceId)
+        return y;
     } catch {
     }
-    try {
-      unlinkSync(keyPath);
-    } catch {
-    }
-  }
-  console.log("[deviceAttestation] Generating new Ed25519 device keypair...");
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const deviceId = fingerprintPublicKey(publicKeyPem);
-  const deviceKey = {
-    deviceId,
-    publicKeyPem,
-    privateKeyPem
+  const { publicKey: t, privateKey: o } = U("ed25519", {
+    publicKeyEncoding: { format: "jwk" },
+    privateKeyEncoding: { format: "pkcs8", type: "pkcs8" }
+  }), i = Buffer.from(t.x, "base64url"), m = i.toString("base64"), _ = `-----BEGIN PRIVATE KEY-----
+${o.toString("base64").replace(/(.{64})/g, `$1
+`).trimEnd()}
+-----END PRIVATE KEY-----`, p = "molty-kiosk-" + H("sha256").update(i).digest("hex").slice(0, 16), r = {
+    publicKeyBase64: m,
+    privateKeyPem: _,
+    deviceId: p
   };
   try {
-    mkdirSync(userDataPath, { recursive: true });
-    writeFileSync(keyPath, JSON.stringify(deviceKey, null, 2), {
-      mode: 384
-    });
-    try {
-      chmodSync(keyPath, 384);
-    } catch {
-    }
-    console.log("[deviceAttestation] Device key persisted to", keyPath);
-    console.log("[deviceAttestation] Device ID:", deviceId);
-  } catch (e) {
-    console.warn("[deviceAttestation] Could not persist device key:", e);
+    F(e, { recursive: !0 }), V(n, JSON.stringify(r, null, 0), "utf-8");
+  } catch (a) {
+    console.warn("[deviceAttestation] Could not persist device key:", a);
   }
-  return deviceKey;
+  return r;
 }
-function signChallenge(params) {
-  const signedAt = Date.now();
-  const scopesStr = params.scopes.join(",");
-  const tokenStr = params.token ?? "";
-  const compoundPayload = [
-    "v2",
-    params.deviceId,
-    params.clientId,
-    params.clientMode,
-    params.role,
-    scopesStr,
-    String(signedAt),
-    tokenStr,
-    params.nonce
-  ].join("|");
-  const key = createPrivateKey({
-    key: params.privateKeyPem,
+function ne(e, n) {
+  const t = z({
+    key: n,
     format: "pem"
-  });
-  const sig = sign(null, Buffer.from(compoundPayload, "utf-8"), key);
+  }), o = Date.now(), i = Buffer.from(e, "utf-8");
   return {
-    signature: base64UrlEncode(sig),
-    signedAt
+    signature: Q(null, i, t).toString("base64"),
+    signedAt: o
   };
 }
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-process.env.APP_ROOT = path.join(__dirname$1, "..");
+const W = d.dirname(q(import.meta.url));
+process.env.APP_ROOT = d.join(W, "..");
 try {
-  const envPath = path.join(process.env.APP_ROOT, ".env");
-  const envFile = readFileSync(envPath, "utf-8");
-  for (const line of envFile.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const idx = trimmed.indexOf("=");
-    if (idx === -1) continue;
-    const key = trimmed.slice(0, idx).trim();
-    const value = trimmed.slice(idx + 1).trim();
-    if (!process.env[key]) {
-      process.env[key] = value;
-    }
+  const e = d.join(process.env.APP_ROOT, ".env"), n = C(e, "utf-8");
+  for (const t of n.split(`
+`)) {
+    const o = t.trim();
+    if (!o || o.startsWith("#")) continue;
+    const i = o.indexOf("=");
+    if (i === -1) continue;
+    const m = o.slice(0, i).trim(), E = o.slice(i + 1).trim();
+    process.env[m] || (process.env[m] = E);
   }
 } catch {
 }
-const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
-const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
-const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
-const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? "wss://molty.somehow.dev/";
-const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
-let ws = null;
-let wsStatus = "disconnected";
-let wsError = null;
-let pendingConnectId = null;
-let tickIntervalId = null;
-let win;
-const assemblyai = process.env.ASSEMBLYAI_API_KEY ? new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY }) : null;
-let transcriber = null;
-async function startTranscriber() {
-  if (!assemblyai) {
-    console.log("[STT] No ASSEMBLYAI_API_KEY set, skipping");
-    return { ok: false, error: "Missing ASSEMBLYAI_API_KEY" };
-  }
-  if (transcriber) {
-    console.log("[STT] Transcriber already running");
-    return { ok: true };
-  }
+const k = process.env.VITE_DEV_SERVER_URL, he = d.join(process.env.APP_ROOT, "dist-electron"), L = d.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = k ? d.join(process.env.APP_ROOT, "public") : L;
+const N = process.env.OPENCLAW_GATEWAY_URL ?? "wss://molty.somehow.dev/", P = process.env.OPENCLAW_GATEWAY_TOKEN;
+let u = null, f = "disconnected", B = null, b = null, A = null, g;
+const R = process.env.ASSEMBLYAI_API_KEY ? new J({ apiKey: process.env.ASSEMBLYAI_API_KEY }) : null;
+let s = null;
+async function te() {
+  if (!R)
+    return console.log("[STT] No ASSEMBLYAI_API_KEY set, skipping"), { ok: !1, error: "Missing ASSEMBLYAI_API_KEY" };
+  if (s)
+    return console.log("[STT] Transcriber already running"), { ok: !0 };
   try {
-    console.log("[STT] Creating streaming transcriber...");
-    transcriber = assemblyai.streaming.transcriber({
+    return console.log("[STT] Creating streaming transcriber..."), s = R.streaming.transcriber({
       sampleRate: 16e3,
-      formatTurns: true,
-      keyterms: ["Molty"]
-    });
-    transcriber.on("turn", (turn) => {
-      console.log(
-        `[STT] Turn: end_of_turn=${turn.end_of_turn} transcript="${turn.transcript}"`
-      );
-      if (turn.end_of_turn && turn.transcript.trim()) {
-        for (const window of BrowserWindow.getAllWindows()) {
-          window.webContents.send("openclaw:transcript", turn.transcript);
-        }
-      }
-    });
-    transcriber.on("error", (err) => {
-      console.error("[STT] Error:", err.message);
-      for (const window of BrowserWindow.getAllWindows()) {
-        window.webContents.send("openclaw:transcript-error", err.message);
-      }
-    });
-    transcriber.on("close", () => {
-      console.log("[STT] Transcriber closed");
-      transcriber = null;
-    });
-    await transcriber.connect();
-    console.log("[STT] Transcriber connected successfully");
-    return { ok: true };
-  } catch (err) {
-    transcriber = null;
-    const message = err instanceof Error ? err.message : "Failed to start transcriber";
-    console.error("[STT] Failed to start:", message);
-    return { ok: false, error: message };
+      formatTurns: !0
+    }), s.on("turn", (e) => {
+      if (console.log(
+        `[STT] Turn: end_of_turn=${e.end_of_turn} transcript="${e.transcript}"`
+      ), e.end_of_turn && e.transcript.trim())
+        for (const n of S.getAllWindows())
+          n.webContents.send("openclaw:transcript", e.transcript);
+    }), s.on("error", (e) => {
+      console.error("[STT] Error:", e.message);
+      for (const n of S.getAllWindows())
+        n.webContents.send("openclaw:transcript-error", e.message);
+    }), s.on("close", () => {
+      console.log("[STT] Transcriber closed"), s = null;
+    }), await s.connect(), console.log("[STT] Transcriber connected successfully"), { ok: !0 };
+  } catch (e) {
+    s = null;
+    const n = e instanceof Error ? e.message : "Failed to start transcriber";
+    return console.error("[STT] Failed to start:", n), { ok: !1, error: n };
   }
 }
-async function stopTranscriber() {
-  if (!transcriber) {
-    return { ok: true };
-  }
+async function Y() {
+  if (!s)
+    return { ok: !0 };
   try {
-    await transcriber.close();
+    await s.close();
   } catch {
   }
-  transcriber = null;
-  return { ok: true };
+  return s = null, { ok: !0 };
 }
-function normalizeGatewayUrl(rawUrl) {
-  if (rawUrl.startsWith("https://")) return `wss://${rawUrl.slice(8)}`;
-  if (rawUrl.startsWith("http://")) return `ws://${rawUrl.slice(7)}`;
-  return rawUrl;
+function oe(e) {
+  return e.startsWith("https://") ? `wss://${e.slice(8)}` : e.startsWith("http://") ? `ws://${e.slice(7)}` : e;
 }
-function buildGatewayUrl() {
-  if (!OPENCLAW_GATEWAY_TOKEN) return null;
-  const url = new URL(normalizeGatewayUrl(OPENCLAW_GATEWAY_URL));
-  url.searchParams.set("token", OPENCLAW_GATEWAY_TOKEN);
-  return url.toString();
+function re() {
+  if (!P) return null;
+  const e = new URL(oe(N));
+  return e.searchParams.set("token", P), e.toString();
 }
-function getStatusPayload() {
-  return { status: wsStatus, error: wsError };
+function w() {
+  return { status: f, error: B };
 }
-function broadcastStatus() {
-  const payload = getStatusPayload();
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("openclaw:status", payload);
-  }
+function se() {
+  const e = w();
+  for (const n of S.getAllWindows())
+    n.webContents.send("openclaw:status", e);
 }
-function broadcastMessage(direction, data) {
-  const payload = {
-    direction,
-    data,
+function c(e, n) {
+  const t = {
+    direction: e,
+    data: n,
     ts: Date.now()
   };
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("openclaw:message", payload);
-  }
+  for (const o of S.getAllWindows())
+    o.webContents.send("openclaw:message", t);
 }
-function setStatus(next, error = null) {
-  wsStatus = next;
-  wsError = error;
-  broadcastStatus();
+function l(e, n = null) {
+  f = e, B = n, se();
 }
-function startGatewayTick(socket, intervalMs) {
-  stopGatewayTick();
-  tickIntervalId = setInterval(() => {
-    if (ws !== socket || wsStatus !== "connected") return;
-    try {
-      const tickReq = JSON.stringify({
-        type: "req",
-        id: `tick-${Date.now()}`,
-        method: "status",
-        params: {}
-      });
-      socket.send(tickReq);
-    } catch {
-    }
-  }, intervalMs);
-}
-function stopGatewayTick() {
-  if (tickIntervalId !== null) {
-    clearInterval(tickIntervalId);
-    tickIntervalId = null;
-  }
-}
-function toText(data) {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return Buffer$1.from(data).toString("utf8");
-  if (ArrayBuffer.isView(data))
-    return Buffer$1.from(data.buffer).toString("utf8");
-  if (Buffer$1.isBuffer(data)) return data.toString("utf8");
-  try {
-    return JSON.stringify(data);
-  } catch {
-    return String(data);
-  }
-}
-function attachSocketHandlers(socket) {
-  const handleOpen = () => {
-    console.log("[Gateway] WebSocket open, waiting for challenge...");
-    broadcastMessage("system", "WebSocket open, authenticating...");
-  };
-  const handleClose = (...args) => {
-    const ev = args[0];
-    const code = typeof ev?.code === "number" ? ev.code : typeof args[0] === "number" ? args[0] : void 0;
-    const reason = typeof ev?.reason === "string" ? ev.reason : typeof args[1] === "string" ? args[1] : void 0;
-    console.log(
-      "[Gateway] Disconnected",
-      code != null ? `(code=${code}` : "",
-      reason ? ` reason=${reason})` : code != null ? ")" : ""
-    );
-    const wasConnecting = wsStatus === "connecting";
-    ws = null;
-    pendingConnectId = null;
-    stopGatewayTick();
-    if (wsStatus !== "error") {
-      setStatus("disconnected");
-    }
-    broadcastMessage("system", "Gateway disconnected");
-    if (wasConnecting && wsStatus === "disconnected") {
-      const instructions = "Device may need approval. On the gateway server run: openclaw devices list, then openclaw devices approve <requestId>. Then connect again.";
-      setStatus("error", instructions);
-      broadcastMessage("system", instructions);
-    }
-  };
-  const handleError = () => {
-    console.error("[Gateway] Connection error");
-    setStatus("error", "Gateway connection failed");
-    broadcastMessage("system", "Gateway error");
-  };
-  const handleMessage = (...args) => {
-    const eventOrData = args[0];
-    const data = eventOrData?.data ?? eventOrData;
-    const text = toText(data);
-    console.log("[Gateway] ← IN:", text.slice(0, 200));
-    let msg;
-    try {
-      msg = JSON.parse(text);
-    } catch {
-      broadcastMessage("in", text);
-      return;
-    }
-    if (msg?.type === "event" && msg?.event === "connect.challenge") {
+function ce(e, n) {
+  G(), A = setInterval(() => {
+    if (!(u !== e || f !== "connected"))
       try {
-        const nonce = String(
-          msg.payload?.nonce ?? ""
-        );
-        const userData = app.getPath("userData");
-        const deviceKey = getOrCreateDeviceKey(userData);
-        const clientId = "cli";
-        const clientMode = "cli";
-        const role = "operator";
-        const scopes = ["operator.read", "operator.write"];
+        const t = JSON.stringify({
+          type: "req",
+          id: `tick-${Date.now()}`,
+          method: "status",
+          params: {}
+        });
+        e.send(t);
+      } catch {
+      }
+  }, n);
+}
+function G() {
+  A !== null && (clearInterval(A), A = null);
+}
+function ie(e) {
+  if (typeof e == "string") return e;
+  if (e instanceof ArrayBuffer) return T.from(e).toString("utf8");
+  if (ArrayBuffer.isView(e))
+    return T.from(e.buffer).toString("utf8");
+  if (T.isBuffer(e)) return e.toString("utf8");
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+function ae(e) {
+  const n = () => {
+    console.log("[Gateway] WebSocket open, waiting for challenge..."), c("system", "WebSocket open, authenticating...");
+  }, t = () => {
+    console.log("[Gateway] Disconnected"), u = null, b = null, G(), f !== "error" && l("disconnected"), c("system", "Gateway disconnected");
+  }, o = () => {
+    console.error("[Gateway] Connection error"), l("error", "Gateway connection failed"), c("system", "Gateway error");
+  }, i = (...m) => {
+    const E = m[0], _ = E?.data ?? E, p = ie(_);
+    console.log("[Gateway] ← IN:", p.slice(0, 200));
+    try {
+      const r = JSON.parse(p);
+      if (r?.type === "event" && r?.event === "connect.challenge") {
+        const a = String(r.payload?.nonce ?? "");
         console.log(
           "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
         );
-        const { signature, signedAt } = signChallenge({
-          nonce,
-          privateKeyPem: deviceKey.privateKeyPem,
-          deviceId: deviceKey.deviceId,
-          clientId,
-          clientMode,
-          role,
-          scopes,
-          token: OPENCLAW_GATEWAY_TOKEN ?? null
-        });
-        const connectReqId = `connect-${Date.now()}`;
-        pendingConnectId = connectReqId;
-        const deviceParams = {
-          id: deviceKey.deviceId,
-          publicKey: publicKeyRawBase64Url(deviceKey.publicKeyPem),
-          signature,
-          signedAt,
-          nonce
-        };
-        const connectReq = JSON.stringify({
+        const y = v.getPath("userData"), O = ee(y), { signature: j, signedAt: $ } = ne(
+          a,
+          O.privateKeyPem
+        ), I = `connect-${Date.now()}`;
+        b = I;
+        const K = JSON.stringify({
           type: "req",
-          id: connectReqId,
+          id: I,
           method: "connect",
           params: {
             minProtocol: 3,
@@ -383,219 +201,152 @@ function attachSocketHandlers(socket) {
             scopes,
             caps: ["voice"],
             auth: {
-              token: OPENCLAW_GATEWAY_TOKEN
+              token: P
             },
             locale: "en-US",
-            userAgent: "openclaw-cli/1.0.0 molty-kiosk",
-            device: deviceParams
+            userAgent: "molty-kiosk/1.0.0",
+            device: {
+              id: O.deviceId,
+              publicKey: O.publicKeyBase64,
+              signature: j,
+              signedAt: $,
+              nonce: a
+            }
           }
         });
-        socket.send(connectReq);
-        console.log("[Gateway] → OUT: connect request sent");
-        broadcastMessage("out", connectReq);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(
-          "[Gateway] Failed to handle connect.challenge:",
-          errMsg,
-          err instanceof Error ? err.stack : ""
-        );
-        setStatus(
-          "error",
-          `Device attestation failed: ${errMsg}. Try deleting the device key and restarting.`
-        );
-        broadcastMessage(
-          "system",
-          `Device attestation error: ${errMsg}`
-        );
-      }
-      broadcastMessage("in", text);
-      return;
-    }
-    if (msg?.type === "res" && msg?.id === pendingConnectId) {
-      pendingConnectId = null;
-      const payload = msg.payload;
-      const errPayload = msg.error;
-      const requestId = payload?.requestId ?? errPayload?.requestId ?? errPayload?.details?.requestId ?? payload?.pairingRequestId;
-      if (msg.ok) {
-        if (payload?.type === "hello-pending" && requestId) {
-          const instructions = `Device pending approval. On the gateway server run: openclaw devices approve ${requestId}`;
-          console.log("[Gateway]", instructions);
-          setStatus("error", instructions);
-          broadcastMessage("system", instructions);
-        } else if (payload?.type === "hello-ok" || !payload?.type) {
-          console.log(
-            "[Gateway] Connect response OK (hello-ok):",
-            JSON.stringify(payload).slice(0, 200)
-          );
-          setStatus("connected");
-          broadcastMessage("system", "Gateway authenticated and connected");
-          const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
-          startGatewayTick(socket, tickMs);
-        } else {
-          setStatus("connected");
-          broadcastMessage("system", "Gateway authenticated and connected");
-          const tickMs = payload?.policy?.tickIntervalMs ?? 15e3;
-          startGatewayTick(socket, tickMs);
-        }
-      } else {
-        const err = msg.error;
-        const baseError = err?.message ?? "Gateway authentication failed";
-        const instructions = requestId ? `On the gateway server run: openclaw devices list, then openclaw devices approve ${requestId}. Then connect again.` : "On the gateway server run: openclaw devices list (to see pending devices), then openclaw devices approve <requestId>. Then connect again.";
-        const fullError = baseError + ". " + instructions;
-        console.error(
-          "[Gateway] Connect response ERROR:",
-          baseError,
-          requestId ? `requestId=${requestId}` : ""
-        );
-        setStatus("error", fullError);
-        broadcastMessage("system", fullError);
-      }
-      broadcastMessage("in", text);
-      return;
-    }
-    broadcastMessage("in", text);
-  };
-  if (typeof socket.addEventListener === "function") {
-    socket.addEventListener("open", handleOpen);
-    socket.addEventListener("message", handleMessage);
-    socket.addEventListener("close", handleClose);
-    socket.addEventListener("error", handleError);
-    return;
-  }
-  if (typeof socket.on === "function") {
-    socket.on("open", handleOpen);
-    socket.on("message", handleMessage);
-    socket.on("close", handleClose);
-    socket.on("error", handleError);
-  }
-}
-function connectGateway() {
-  if (wsStatus === "connected" || wsStatus === "connecting") {
-    return getStatusPayload();
-  }
-  const url = buildGatewayUrl();
-  if (!url) {
-    setStatus("error", "Missing OPENCLAW_GATEWAY_TOKEN");
-    return getStatusPayload();
-  }
-  const WebSocketCtor = globalThis.WebSocket;
-  if (!WebSocketCtor) {
-    setStatus("error", "WebSocket not available in main process");
-    return getStatusPayload();
-  }
-  console.log("[Gateway] Connecting to", OPENCLAW_GATEWAY_URL);
-  setStatus("connecting");
-  try {
-    ws = new WebSocketCtor(url);
-    attachSocketHandlers(ws);
-    broadcastMessage("system", "Connecting to OpenClaw gateway...");
-  } catch (err) {
-    console.error("[Gateway] Failed to connect:", err);
-    setStatus("error", "Failed to start connection");
-  }
-  return getStatusPayload();
-}
-function disconnectGateway() {
-  pendingConnectId = null;
-  stopGatewayTick();
-  if (ws) {
-    try {
-      ws.close();
-    } catch {
-    }
-    ws = null;
-  }
-  if (wsStatus !== "disconnected") {
-    setStatus("disconnected");
-  }
-  return getStatusPayload();
-}
-function sendGateway(payload) {
-  if (!ws || wsStatus !== "connected") {
-    console.log(
-      "[Gateway] Cannot send — not connected (status:",
-      wsStatus,
-      ")"
-    );
-    return { ok: false, error: "Gateway not connected" };
-  }
-  const data = typeof payload === "string" ? payload : JSON.stringify(payload);
-  console.log("[Gateway] → OUT:", data.slice(0, 200));
-  try {
-    ws.send(data);
-    broadcastMessage("out", data);
-    return { ok: true };
-  } catch (err) {
-    console.error("[Gateway] Send failed:", err);
-    return { ok: false, error: "Failed to send message" };
-  }
-}
-function createWindow() {
-  const isKiosk = process.argv.includes("--kiosk") || process.env.KIOSK === "true";
-  win = new BrowserWindow({
-    width: 320,
-    height: 480,
-    kiosk: isKiosk,
-    alwaysOnTop: isKiosk,
-    frame: !isKiosk,
-    resizable: false,
-    title: "kiosk",
-    webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs")
-    }
-  });
-  win.webContents.session.setPermissionRequestHandler(
-    (_webContents, permission, callback) => {
-      if (permission === "media") {
-        callback(true);
+        e.send(K), console.log("[Gateway] → OUT: connect request sent"), c("out", K), c("in", p);
         return;
       }
-      callback(false);
+      if (r?.type === "res" && r?.id === b) {
+        if (b = null, r.ok) {
+          const a = r.payload;
+          console.log(
+            "[Gateway] Connect response OK (hello-ok):",
+            JSON.stringify(a).slice(0, 200)
+          ), l("connected"), c("system", "Gateway authenticated and connected");
+          const y = a?.policy?.tickIntervalMs ?? 15e3;
+          ce(e, y);
+        } else
+          console.error(
+            "[Gateway] Connect response ERROR:",
+            JSON.stringify(r.error)
+          ), l(
+            "error",
+            r.error?.message ?? "Gateway authentication failed"
+          ), c(
+            "system",
+            `Auth failed: ${r.error?.message ?? "unknown error"}`
+          );
+        c("in", p);
+        return;
+      }
+      if (r?.type === "res") {
+        c("in", p);
+        return;
+      }
+    } catch {
     }
-  );
-  if (isKiosk) {
-    win.setMenu(null);
+    c("in", p);
+  };
+  if (typeof e.addEventListener == "function") {
+    e.addEventListener("open", n), e.addEventListener("message", i), e.addEventListener("close", t), e.addEventListener("error", o);
+    return;
   }
-  if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL);
-  } else {
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
+  typeof e.on == "function" && (e.on("open", n), e.on("message", i), e.on("close", t), e.on("error", o));
+}
+function le() {
+  if (f === "connected" || f === "connecting")
+    return w();
+  const e = re();
+  if (!e)
+    return l("error", "Missing OPENCLAW_GATEWAY_TOKEN"), w();
+  const n = globalThis.WebSocket;
+  if (!n)
+    return l("error", "WebSocket not available in main process"), w();
+  console.log("[Gateway] Connecting to", N), l("connecting");
+  try {
+    u = new n(e), ae(u), c("system", "Connecting to OpenClaw gateway...");
+  } catch (t) {
+    console.error("[Gateway] Failed to connect:", t), l("error", "Failed to start connection");
   }
-  win.webContents.once("did-finish-load", () => {
-    win?.webContents.send("openclaw:status", getStatusPayload());
+  return w();
+}
+function D() {
+  if (b = null, G(), u) {
+    try {
+      u.close();
+    } catch {
+    }
+    u = null;
+  }
+  return f !== "disconnected" && l("disconnected"), w();
+}
+function ue(e) {
+  if (!u || f !== "connected")
+    return console.log(
+      "[Gateway] Cannot send — not connected (status:",
+      f,
+      ")"
+    ), { ok: !1, error: "Gateway not connected" };
+  const n = typeof e == "string" ? e : JSON.stringify(e);
+  console.log("[Gateway] → OUT:", n.slice(0, 200));
+  try {
+    return u.send(n), c("out", n), { ok: !0 };
+  } catch (t) {
+    return console.error("[Gateway] Send failed:", t), { ok: !1, error: "Failed to send message" };
+  }
+}
+function M() {
+  const e = process.argv.includes("--kiosk") || process.env.KIOSK === "true";
+  g = new S({
+    width: 320,
+    height: 480,
+    kiosk: e,
+    alwaysOnTop: e,
+    frame: !e,
+    resizable: !1,
+    title: "kiosk",
+    webPreferences: {
+      preload: d.join(W, "preload.mjs")
+    }
+  }), g.webContents.session.setPermissionRequestHandler(
+    (n, t, o) => {
+      if (t === "media") {
+        o(!0);
+        return;
+      }
+      o(!1);
+    }
+  ), e && g.setMenu(null), k ? g.loadURL(k) : g.loadFile(d.join(L, "index.html")), g.webContents.once("did-finish-load", () => {
+    g?.webContents.send("openclaw:status", w());
   });
 }
-ipcMain.handle("openclaw:connect", () => connectGateway());
-ipcMain.handle("openclaw:disconnect", () => disconnectGateway());
-ipcMain.handle("openclaw:get-status", () => getStatusPayload());
-ipcMain.handle("openclaw:send", (_event, payload) => sendGateway(payload));
-ipcMain.handle("openclaw:start-listening", () => startTranscriber());
-ipcMain.handle("openclaw:stop-listening", () => stopTranscriber());
-ipcMain.on("openclaw:audio-chunk", (_event, pcmData) => {
-  if (transcriber) {
-    const buf = Buffer$1.from(pcmData);
-    transcriber.sendAudio(
-      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+h.handle("openclaw:connect", () => le());
+h.handle("openclaw:disconnect", () => D());
+h.handle("openclaw:get-status", () => w());
+h.handle("openclaw:send", (e, n) => ue(n));
+h.handle("openclaw:start-listening", () => te());
+h.handle("openclaw:stop-listening", () => Y());
+h.on("openclaw:audio-chunk", (e, n) => {
+  if (s) {
+    const t = T.from(n);
+    s.sendAudio(
+      t.buffer.slice(t.byteOffset, t.byteOffset + t.byteLength)
     );
   }
 });
-app.on("before-quit", () => {
-  disconnectGateway();
-  stopTranscriber();
+v.on("before-quit", () => {
+  D(), Y();
 });
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-    win = null;
-  }
+v.on("window-all-closed", () => {
+  process.platform !== "darwin" && (v.quit(), g = null);
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+v.on("activate", () => {
+  S.getAllWindows().length === 0 && M();
 });
-app.whenReady().then(() => createWindow());
+v.whenReady().then(() => M());
 export {
-  MAIN_DIST,
-  RENDERER_DIST,
-  VITE_DEV_SERVER_URL
+  he as MAIN_DIST,
+  L as RENDERER_DIST,
+  k as VITE_DEV_SERVER_URL
 };
