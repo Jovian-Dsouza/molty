@@ -20,6 +20,8 @@ Set the env var in OpenClaw config so the gateway always has it:
 
 ```
 openclaw config set env.vars.STORK_API_KEY "YOUR_STORK_KEY"
+openclaw config set env.vars.STORK_API_KEY "YOUR_STORK_KEY"
+openclaw config set env.vars.STORK_API_KEY "YOUR_STORK_KEY"
 ```
 
 2. Restart OpenClaw (usually auto after config writes; if not):
