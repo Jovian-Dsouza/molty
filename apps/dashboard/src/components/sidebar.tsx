@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, TrendingUp, Target, Receipt } from "lucide-react";
+import { LayoutDashboard, PlusCircle, Target, Receipt, Wallet, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/markets", label: "Markets", icon: TrendingUp },
+  { href: "/markets", label: "Create Market", icon: PlusCircle },
   { href: "/predictions", label: "Predictions", icon: Target },
+  { href: "/my-bets", label: "My Bets", icon: Wallet },
+  { href: "/profile", label: "Profile", icon: User },
   { href: "/transactions", label: "Transactions", icon: Receipt },
 ];
 

@@ -11,9 +11,9 @@ import {
 import { cn } from "@/lib/utils";
 
 const CHAINS: { id: number; name: string; color: string }[] = [
+  { id: 11155111, name: "Sepolia", color: "bg-violet-500" },
   { id: 8453, name: "Base", color: "bg-blue-500" },
   { id: 84532, name: "Base Sepolia", color: "bg-blue-400" },
-  { id: 11155111, name: "Sepolia", color: "bg-violet-500" },
 ];
 
 interface NetworkSelectorProps {

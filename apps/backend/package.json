@@ -9,6 +9,12 @@
   "scripts": {
     "start": "node server.js",
     "create-market": "node scripts/create-market.js",
+    "setup-demo": "node scripts/setup-demo-base-sepolia.js",
+    "place-one-bet": "node scripts/place-one-bet.js",
+    "place-bet-wallet-a": "node scripts/place-bet-wallet-a.js",
+    "deposit": "node scripts/deposit-to-custody.js",
+    "deposit-wallet-a": "node scripts/deposit-to-custody.js --wallet-a",
+    "withdraw": "node scripts/withdraw-from-custody.js",
     "dev": "node server.js"
   },
   "dependencies": {

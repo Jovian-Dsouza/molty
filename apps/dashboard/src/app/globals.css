@@ -4,36 +4,36 @@
 
 @layer base {
   :root {
-    /* Dark theme: green base, gold accents, win/loss colors */
-    --background: 142 45% 6%;
-    --foreground: 45 20% 96%;
-    --card: 142 38% 9%;
-    --card-foreground: 45 20% 96%;
-    --primary: 43 96% 56%;
-    --primary-foreground: 142 45% 8%;
-    --secondary: 142 25% 14%;
-    --secondary-foreground: 45 15% 94%;
-    --muted: 142 22% 12%;
-    --muted-foreground: 142 10% 55%;
-    --accent: 43 90% 50%;
-    --accent-foreground: 142 45% 8%;
+    /* Red Moltbot: dark base, red accents */
+    --background: 0 0% 5%;
+    --foreground: 0 0% 96%;
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 96%;
+    --primary: 0 72% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 94%;
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 55%;
+    --accent: 0 72% 50%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 142 25% 16%;
-    --input: 142 25% 14%;
-    --ring: 43 96% 56%;
+    --border: 0 0% 16%;
+    --input: 0 0% 14%;
+    --ring: 0 72% 55%;
     --radius: 0.75rem;
     --radius-lg: 1rem;
-    --popover: 142 38% 9%;
-    --popover-foreground: 45 20% 96%;
-    --sidebar: 142 48% 5%;
-    --sidebar-foreground: 45 15% 94%;
-    --sidebar-muted: 142 12% 52%;
-    --sidebar-border: 142 28% 14%;
-    --sidebar-hover: 142 30% 12%;
-    --sidebar-active: 43 96% 56%;
-    --sidebar-active-foreground: 142 45% 8%;
-    --glow-primary: 43 96% 56% / 0.25;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 96%;
+    --sidebar: 0 0% 4%;
+    --sidebar-foreground: 0 0% 94%;
+    --sidebar-muted: 0 0% 52%;
+    --sidebar-border: 0 0% 14%;
+    --sidebar-hover: 0 0% 12%;
+    --sidebar-active: 0 72% 55%;
+    --sidebar-active-foreground: 0 0% 100%;
+    --glow-primary: 0 72% 55% / 0.35;
     --win: 142 70% 45%;
     --loss: 0 72% 51%;
   }
@@ -46,12 +46,12 @@
   body {
     @apply bg-background text-foreground antialiased;
   }
-  /* Subtle diamond pattern */
+  /* Red glow pattern */
   .bg-dashboard-pattern {
     background-image:
-      radial-gradient(ellipse 120% 80% at 50% -10%, hsl(var(--primary) / 0.06), transparent 50%),
-      linear-gradient(135deg, hsl(var(--border) / 0.04) 1px, transparent 1px),
-      linear-gradient(45deg, hsl(var(--border) / 0.04) 1px, transparent 1px);
+      radial-gradient(ellipse 120% 80% at 50% -10%, hsl(var(--primary) / 0.08), transparent 50%),
+      linear-gradient(135deg, hsl(var(--border) / 0.06) 1px, transparent 1px),
+      linear-gradient(45deg, hsl(var(--border) / 0.06) 1px, transparent 1px);
     background-size: 100% 100%, 28px 28px, 28px 28px;
   }
 }

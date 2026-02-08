@@ -38,7 +38,7 @@ export default function TransactionsContent() {
   const { address } = useAccount();
   const [transactions, setTransactions] = useState<YellowTx[]>([]);
   const [loading, setLoading] = useState(true);
-  const [chainId, setChainId] = useState(8453);
+  const [chainId, setChainId] = useState(11155111);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
