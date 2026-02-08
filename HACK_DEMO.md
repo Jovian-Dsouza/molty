@@ -102,6 +102,90 @@ The backend `apps/backend/lib/yellow.js` detects production by URL: if `YELLOW_W
 
 ---
 
+### Step 3 — Arc Treasury Management (Arc Testnet)
+
+**Goal:** Show autonomous treasury management with real-world assets on Arc.
+
+**Prize target:** Best Agentic Commerce App Powered by Real-World Assets on Arc ($2,500)
+
+#### Pre-requisites
+
+1. Get testnet USDC from https://faucet.circle.com (select Arc Testnet)
+2. Apply for USYC allowlisting via Circle Support (include your wallet address, takes 24–48h)
+
+#### Demo flow
+
+1. **Check Arc balance:**
+   - Voice: "What's my Arc treasury?"
+   - Molty reads USDC + USYC balances on Arc Testnet
+
+2. **Deposit into yield (RWA):**
+   - Voice: "Move 50 USDC into US Treasuries"
+   - Molty approves USDC → calls Teller.deposit() → mints USYC
+   - USYC = tokenized US Treasury money market fund, earning ~4.5% APY
+
+3. **Check yield position:**
+   - Voice: "How's my yield?"
+   - Molty shows USYC balance, estimated APY, daily/monthly yield
+
+4. **Auto-rebalance (key feature):**
+   - Voice: "Rebalance my treasury based on market conditions"
+   - Molty fetches live prices from Stork oracle (ETH, BTC, SOL)
+   - Calculates market signal (bearish/neutral/bullish)
+   - Decides allocation: bearish → 70% USYC / bullish → 80% USDC
+   - Executes the deposit or withdrawal autonomously
+   - Reports: "Market is bearish (ETH -4.2%, BTC -3.8%). Moving 70% to USYC for safe yield."
+
+5. **Send USDC payment:**
+   - Voice: "Send 10 USDC to [address] on Arc"
+   - Molty sends USDC via ERC-20 transfer on Arc, confirms instantly
+
+#### Arc details
+
+| Property | Value |
+|----------|-------|
+| Network | Arc Testnet |
+| Chain ID | 5042002 |
+| RPC | `https://rpc.testnet.arc.network` |
+| Gas Token | USDC (native) |
+| USDC ERC-20 | `0x3600000000000000000000000000000000000000` |
+| USYC Token | `0xe9185F0c5F296Ed1797AaE4238D26CCaBEadb86C` |
+| USYC Teller | `0x9fdF14c5B14173D74C08Af27AebFf39240dC105A` |
+| Explorer | `https://testnet.arcscan.app` |
+| Faucet | `https://faucet.circle.com` |
+
+#### Why this wins the Arc prize
+
+- **RWA collateral:** USYC is a real tokenized US Treasury fund, not a mock
+- **Autonomous agent:** Molty makes rebalancing decisions without human intervention
+- **Oracle-driven logic:** Stork price feeds drive every allocation decision
+- **USDC settlement:** Everything is denominated and settled in USDC on Arc
+- **Clear decision logic:** Every rebalance explains the market signal and reasoning
+
+---
+
+## How all three steps fit together
+
+```
+[ Funds on any chain ]
+         │
+  Step 1 │  LI.FI: Swap/bridge to USDC on Base
+         ▼
+[ USDC on Base ]
+         │
+  Step 2 │  Yellow: Deposit → Predict → Resolve → Settle (gasless state channels)
+         ▼
+[ Winnings in USDC on Base ]
+         │
+  Step 3 │  Arc: Park idle USDC in USYC (US Treasuries) → Auto-rebalance by market signals
+         ▼
+[ Treasury earning 4.5% yield on Arc, liquid for next bet ]
+```
+
+**Full cycle:** Trade on Base (LI.FI) → Bet on Base (Yellow) → Earn yield on Arc (USYC). Molty manages all three autonomously.
+
+---
+
 ## One-line summary
 
-**First trade on Base (LI.FI) → then Yellow on Base (deposit, create, resolve, settle). All on Base mainnet.**
+**Trade on Base (LI.FI) → Predict on Base (Yellow) → Earn yield on Arc (USYC). All autonomous, all USDC.**
