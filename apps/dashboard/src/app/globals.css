@@ -4,26 +4,38 @@
 
 @layer base {
   :root {
-    --background: 222 47% 6%;
-    --foreground: 30 20% 98%;
-    --card: 222 40% 8%;
-    --card-foreground: 30 20% 98%;
-    --primary: 24 95% 53%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 30 20% 98%;
-    --muted: 217 20% 14%;
-    --muted-foreground: 215 16% 57%;
-    --accent: 38 92% 50%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84% 60%;
+    /* Dark theme: green base, gold accents, win/loss colors */
+    --background: 142 45% 6%;
+    --foreground: 45 20% 96%;
+    --card: 142 38% 9%;
+    --card-foreground: 45 20% 96%;
+    --primary: 43 96% 56%;
+    --primary-foreground: 142 45% 8%;
+    --secondary: 142 25% 14%;
+    --secondary-foreground: 45 15% 94%;
+    --muted: 142 22% 12%;
+    --muted-foreground: 142 10% 55%;
+    --accent: 43 90% 50%;
+    --accent-foreground: 142 45% 8%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 217 25% 18%;
-    --input: 217 25% 18%;
-    --ring: 24 95% 53%;
+    --border: 142 25% 16%;
+    --input: 142 25% 14%;
+    --ring: 43 96% 56%;
     --radius: 0.75rem;
-    --popover: 222 40% 8%;
-    --popover-foreground: 30 20% 98%;
+    --radius-lg: 1rem;
+    --popover: 142 38% 9%;
+    --popover-foreground: 45 20% 96%;
+    --sidebar: 142 48% 5%;
+    --sidebar-foreground: 45 15% 94%;
+    --sidebar-muted: 142 12% 52%;
+    --sidebar-border: 142 28% 14%;
+    --sidebar-hover: 142 30% 12%;
+    --sidebar-active: 43 96% 56%;
+    --sidebar-active-foreground: 142 45% 8%;
+    --glow-primary: 43 96% 56% / 0.25;
+    --win: 142 70% 45%;
+    --loss: 0 72% 51%;
   }
 }
 
@@ -34,4 +46,30 @@
   body {
     @apply bg-background text-foreground antialiased;
   }
+  /* Subtle diamond pattern */
+  .bg-dashboard-pattern {
+    background-image:
+      radial-gradient(ellipse 120% 80% at 50% -10%, hsl(var(--primary) / 0.06), transparent 50%),
+      linear-gradient(135deg, hsl(var(--border) / 0.04) 1px, transparent 1px),
+      linear-gradient(45deg, hsl(var(--border) / 0.04) 1px, transparent 1px);
+    background-size: 100% 100%, 28px 28px, 28px 28px;
+  }
+}
+
+@layer components {
+  .card-elevated {
+    @apply rounded-xl border border-border/80 bg-card shadow-lg shadow-black/30;
+    box-shadow: 0 4px 24px -4px rgba(0,0,0,0.4), 0 0 0 1px hsl(var(--border) / 0.5);
+  }
+  .card-highlight {
+    @apply rounded-xl border border-primary/20 bg-card shadow-lg;
+    box-shadow: 0 4px 24px -4px rgba(0,0,0,0.35), 0 0 0 1px hsl(var(--primary) / 0.15);
+  }
+  .nav-link-active {
+    @apply bg-primary text-primary-foreground shadow-sm;
+  }
+  .text-win { color: hsl(var(--win)); }
+  .text-loss { color: hsl(var(--loss)); }
+  .bg-win { background-color: hsl(var(--win) / 0.15); }
+  .bg-loss { background-color: hsl(var(--loss) / 0.15); }
 }

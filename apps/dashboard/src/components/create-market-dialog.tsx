@@ -63,7 +63,13 @@ export function CreateMarketDialog({ onSuccess, trigger }: CreateMarketDialogPro
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        setError(null);
+      }}
+    >
       <DialogTrigger asChild>
         {trigger ?? (
           <Button className="gap-2">

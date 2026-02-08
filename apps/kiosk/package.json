@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
+    "start": "KIOSK=true vite",
     "dev": "vite",
     "dev:kiosk": "KIOSK=true vite",
     "build": "tsc -b && vite build && electron-builder",

@@ -5,7 +5,12 @@
  * - POST /api/markets     → create market (Yellow app session + prediction state)
  * - POST /api/markets/:id/resolve → resolve by price (or optional ?outcome=WIN|LOSS)
  */
-import 'dotenv/config';
+import path from "path";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, ".env") });
 import express from 'express';
 import { connectAndCreateMarket, resolveMarket } from './lib/yellow.js';
 import { fetchCurrentPrice } from './lib/price.js';
@@ -14,6 +19,12 @@ import { loadState, saveState, addMarket, updateMarket, getMarket } from './lib/
 const PORT = parseInt(process.env.PORT || '3999', 10);
 const app = express();
 app.use(express.json());
+
+// Request logging
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
 
 // CORS for dashboard (Vercel) and kiosk
 app.use((req, res, next) => {
@@ -77,10 +88,12 @@ app.post('/api/markets', async (req, res) => {
   }
 
   try {
+    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : undefined;
     const result = await connectAndCreateMarket({
       privateKey,
       rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
       wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
+      chainId,
       sessionPrivateKey: state.sessionPrivateKey,
       question: question || `Will ${asset} go ${direction === 'LONG' ? 'above' : 'below'} $${targetPrice}?`,
       asset,
@@ -134,10 +147,12 @@ app.post('/api/markets/:id/resolve', async (req, res) => {
   const overrideOutcome = req.query.outcome || req.body?.outcome; // WIN | LOSS
 
   try {
+    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : undefined;
     const result = await resolveMarket({
       privateKey,
       rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
       wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
+      chainId,
       sessionPrivateKey,
       appSessionId: market.appSessionId,
       allocations: market.allocations,

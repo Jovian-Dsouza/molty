@@ -1,0 +1,20 @@
+{
+  "name": "e2e-crosschain-prediction",
+  "version": "1.0.0",
+  "description": "End-to-end: LI.FI cross-chain swap → Yellow state channel → LO prediction → on-chain settlement",
+  "type": "module",
+  "scripts": {
+    "start": "node main.js",
+    "fund": "node src/1-lifi-crosschain.js",
+    "channel": "node src/2-yellow-channel.js",
+    "predict": "node src/3-lo-prediction.js",
+    "settle": "node src/4-settlement.js",
+    "e2e": "node main.js"
+  },
+  "dependencies": {
+    "@erc7824/nitrolite": "^0.5.3",
+    "dotenv": "^17.2.4",
+    "viem": "^2.45.1",
+    "ws": "^8.19.0"
+  }
+}

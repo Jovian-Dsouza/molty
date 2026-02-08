@@ -1,14 +1,19 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { DM_Sans } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
-import { Nav } from "@/components/nav";
+import { Sidebar } from "@/components/sidebar";
+import { TopNavbar } from "@/components/top-navbar";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  weight: ["400", "500", "600", "700"],
+});
 
 export const metadata: Metadata = {
-  title: "Molty Predictions",
-  description: "Yellow prediction markets — create, trade, resolve",
+  title: "Molty",
+  description: "Prediction markets — create, trade, resolve. Settled in USDC.",
 };
 
 export default function RootLayout({
@@ -18,11 +23,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <body className={`${inter.variable} font-sans min-h-screen bg-background`}>
+      <body className={`${dmSans.variable} font-sans min-h-screen bg-background antialiased`}>
         <Providers>
-          <div className="flex min-h-screen flex-col">
-            <Nav />
-            <main className="flex-1">{children}</main>
+          <div className="flex min-h-screen">
+            <Sidebar />
+            <div className="flex min-h-screen flex-1 flex-col pl-64">
+              <TopNavbar />
+              <main className="flex-1 bg-dashboard-pattern">{children}</main>
+            </div>
           </div>
         </Providers>
       </body>

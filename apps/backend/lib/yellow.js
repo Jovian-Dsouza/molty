@@ -16,12 +16,33 @@ import {
   RPCMethod,
 } from '@erc7824/nitrolite';
 import { createWalletClient, http } from 'viem';
-import { sepolia } from 'viem/chains';
+import { base, baseSepolia, sepolia } from 'viem/chains';
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 
 const PROTOCOL = 'NitroRPC/0.2';
 const APP_NAME = 'molty-prediction';
 const SCOPE = 'molty.app';
+
+const CHAIN_ID_BASE = 8453;
+const CHAIN_ID_BASE_SEPOLIA = 84532;
+const CHAIN_ID_SEPOLIA = 11155111;
+
+/** Production = Base mainnet + usdc; Sandbox = Sepolia or Base Sepolia + ytest.usd */
+function isProduction(wsUrl) {
+  return typeof wsUrl === 'string' && wsUrl.includes('clearnet.yellow.com') && !wsUrl.includes('sandbox');
+}
+
+function getChain(wsUrl, chainId) {
+  if (isProduction(wsUrl)) return base;
+  const id = chainId === undefined || chainId === null ? CHAIN_ID_SEPOLIA : Number(chainId);
+  if (id === CHAIN_ID_BASE) return base;
+  if (id === CHAIN_ID_BASE_SEPOLIA) return baseSepolia;
+  return sepolia;
+}
+
+function getAsset(wsUrl) {
+  return isProduction(wsUrl) ? 'usdc' : 'ytest.usd';
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -74,6 +95,7 @@ export async function connectAndCreateMarket({
   privateKey,
   rpcUrl = 'https://rpc.sepolia.org',
   wsUrl = 'wss://clearnet-sandbox.yellow.com/ws',
+  chainId,
   sessionPrivateKey: existingSessionKey,
   question,
   asset = 'ETHUSD',
@@ -87,7 +109,9 @@ export async function connectAndCreateMarket({
   const sessionPrivateKey = existingSessionKey || generatePrivateKey();
   const sessionAccount = privateKeyToAccount(sessionPrivateKey);
   const sessionSigner = createECDSAMessageSigner(sessionPrivateKey);
-  const walletClient = createWalletClient({ chain: sepolia, transport: http(rpcUrl), account });
+  const chain = getChain(wsUrl, chainId);
+  const assetId = getAsset(wsUrl);
+  const walletClient = createWalletClient({ chain, transport: http(rpcUrl), account });
 
   const ws = await new Promise((resolve, reject) => {
     const s = new WebSocket(wsUrl);
@@ -96,12 +120,12 @@ export async function connectAndCreateMarket({
     setTimeout(() => reject(new Error('WS timeout')), 10000);
   });
 
-  // Auth
+  // Auth (production = usdc, sandbox = ytest.usd)
   const authParams = {
     address: account.address,
     session_key: sessionAccount.address,
     application: APP_NAME,
-    allowances: [{ asset: 'ytest.usd', amount: '1000000000' }],
+    allowances: [{ asset: assetId, amount: '1000000000' }],
     expires_at: BigInt(Math.floor(Date.now() / 1000) + 7200),
     scope: SCOPE,
   };
@@ -133,8 +157,8 @@ export async function connectAndCreateMarket({
     nonce: Date.now(),
   };
   const allocations = [
-    { participant: account.address, asset: 'ytest.usd', amount },
-    { participant: broker, asset: 'ytest.usd', amount: '0' },
+    { participant: account.address, asset: assetId, amount },
+    { participant: broker, asset: assetId, amount: '0' },
   ];
 
   ws.send(await createAppSessionMessage(sessionSigner, { definition: appDef, allocations }));
@@ -186,6 +210,7 @@ export async function resolveMarket({
   privateKey,
   rpcUrl = 'https://rpc.sepolia.org',
   wsUrl = 'wss://clearnet-sandbox.yellow.com/ws',
+  chainId,
   sessionPrivateKey,
   appSessionId,
   allocations,
@@ -226,12 +251,13 @@ export async function resolveMarket({
     setTimeout(() => reject(new Error('WS timeout')), 10000);
   });
 
-  const walletClient = createWalletClient({ chain: sepolia, transport: http(rpcUrl), account });
+  const chain = getChain(wsUrl, chainId);
+  const walletClient = createWalletClient({ chain, transport: http(rpcUrl), account });
   const authParams = {
     address: account.address,
     session_key: privateKeyToAccount(sessionPrivateKey).address,
     application: APP_NAME,
-    allowances: [{ asset: 'ytest.usd', amount: '1000000000' }],
+    allowances: [{ asset: getAsset(wsUrl), amount: '1000000000' }],
     expires_at: BigInt(Math.floor(Date.now() / 1000) + 7200),
     scope: SCOPE,
   };
