@@ -13,10 +13,17 @@ const BASE_RPCS = [
   "https://1rpc.io/base",
 ];
 
+const SEPOLIA_RPCS = [
+  "https://0xrpc.io/sep",
+  "https://sepolia.drpc.org",
+  "https://ethereum-sepolia-rpc.publicnode.com",
+  "https://1rpc.io/sepolia",
+];
+
 const chains: Record<number, { chain: Chain; transport: ReturnType<typeof http> | ReturnType<typeof fallback> }> = {
   8453: { chain: base, transport: fallback(BASE_RPCS.map((url) => http(url))) },
   84532: { chain: baseSepolia, transport: http("https://sepolia.base.org") },
-  11155111: { chain: sepolia, transport: http("https://rpc.sepolia.org") },
+  11155111: { chain: sepolia, transport: fallback(SEPOLIA_RPCS.map((url) => http(url))) },
 };
 
 const custodyAbi = [
@@ -27,7 +34,7 @@ const custodyAbi = [
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const address = searchParams.get("address");
-  const chainId = parseInt(searchParams.get("chainId") ?? "8453", 10);
+  const chainId = parseInt(searchParams.get("chainId") ?? "11155111", 10);
   const limit = Math.min(parseInt(searchParams.get("limit") ?? "50", 10), 100);
 
   const cfg = chains[chainId];
@@ -42,24 +49,34 @@ export async function GET(request: NextRequest) {
     transport: cfg.transport,
   });
 
+  let deposited: Awaited<ReturnType<typeof client.getLogs>> = [];
+  let withdrawn: Awaited<ReturnType<typeof client.getLogs>> = [];
   try {
     const block = await client.getBlockNumber();
     const fiftyK = BigInt(50000);
     const fromBlock = block > fiftyK ? block - fiftyK : BigInt(0);
     const toBlock = block;
 
-    const deposited = await client.getLogs({
-      address: custody,
-      events: [custodyAbi[0]],
-      fromBlock,
-      toBlock,
-    });
-    const withdrawn = await client.getLogs({
-      address: custody,
-      events: [custodyAbi[1]],
-      fromBlock,
-      toBlock,
-    });
+    [deposited, withdrawn] = await Promise.all([
+      client.getLogs({
+        address: custody,
+        events: [custodyAbi[0]],
+        fromBlock,
+        toBlock,
+      }),
+      client.getLogs({
+        address: custody,
+        events: [custodyAbi[1]],
+        fromBlock,
+        toBlock,
+      }),
+    ]);
+  } catch (rpcErr) {
+    console.error("transactions API RPC error:", rpcErr);
+    return NextResponse.json({ transactions: [] });
+  }
+
+  try {
 
     type TxEntry = {
       type: "Deposit" | "Withdraw";
@@ -109,9 +126,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ transactions: slice });
   } catch (err) {
     console.error("transactions API error:", err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to fetch" },
-      { status: 500 }
-    );
+    return NextResponse.json({ transactions: [] });
   }
 }

@@ -67,6 +67,7 @@ async function main() {
     appSessionId: result.appSessionId,
     allocations: result.allocations,
     prediction: result.prediction,
+    sessionPrivateKey: result.sessionPrivateKey,
   });
 
   if (result.sessionPrivateKey && !state.sessionPrivateKey) {

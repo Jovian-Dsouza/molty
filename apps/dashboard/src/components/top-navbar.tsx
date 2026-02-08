@@ -23,7 +23,7 @@ export function TopNavbar({ className }: TopNavbarProps) {
       )}
     >
       <div className="flex flex-1 items-center gap-4">
-        <span className="hidden rounded bg-win/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-win sm:inline-block">
+        <span className="hidden rounded bg-primary/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-primary sm:inline-block">
           Live
         </span>
         <div className="relative max-w-sm flex-1">

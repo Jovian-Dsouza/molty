@@ -43,6 +43,18 @@ app.get('/', (req, res) => {
   res.redirect(302, '/health');
 });
 
+// GET /api/price?asset=ETHUSD
+app.get('/api/price', async (req, res) => {
+  const asset = (req.query.asset || 'ETHUSD').toUpperCase();
+  try {
+    const data = await fetchCurrentPrice(asset);
+    if (!data) return res.status(404).json({ error: 'Price not found' });
+    res.json({ asset: data.asset, price: data.price });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/markets
 app.get('/api/markets', (req, res) => {
   try {
@@ -88,21 +100,45 @@ app.post('/api/markets', async (req, res) => {
   }
 
   try {
-    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : undefined;
-    const result = await connectAndCreateMarket({
-      privateKey,
-      rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
-      wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
-      chainId,
-      sessionPrivateKey: state.sessionPrivateKey,
-      question: question || `Will ${asset} go ${direction === 'LONG' ? 'above' : 'below'} $${targetPrice}?`,
-      asset,
-      direction,
-      targetPrice: Number(targetPrice),
-      amount: String(amount),
-      expirySeconds,
-      odds: 2.0,
-    });
+    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : 11155111;
+    let result;
+    try {
+      result = await connectAndCreateMarket({
+        privateKey,
+        rpcUrl: process.env.RPC_URL || 'https://0xrpc.io/sep',
+        wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
+        chainId,
+        sessionPrivateKey: state.sessionPrivateKey || undefined,
+        question: question || `Will ${asset} go ${direction === 'LONG' ? 'above' : 'below'} $${targetPrice}?`,
+        asset,
+        direction,
+        targetPrice: Number(targetPrice),
+        amount: String(amount),
+        expirySeconds,
+        odds: 2.0,
+      });
+    } catch (createErr) {
+      const msg = createErr?.message || '';
+      if (msg.includes('session key') && msg.includes('expired')) {
+        saveState({ ...loadState(), sessionPrivateKey: null });
+        result = await connectAndCreateMarket({
+          privateKey,
+          rpcUrl: process.env.RPC_URL || 'https://0xrpc.io/sep',
+          wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
+          chainId,
+          sessionPrivateKey: undefined,
+          question: question || `Will ${asset} go ${direction === 'LONG' ? 'above' : 'below'} $${targetPrice}?`,
+          asset,
+          direction,
+          targetPrice: Number(targetPrice),
+          amount: String(amount),
+          expirySeconds,
+          odds: 2.0,
+        });
+      } else {
+        throw createErr;
+      }
+    }
 
     const market = addMarket(state, {
       id: `m_${Date.now()}`,
@@ -116,11 +152,10 @@ app.post('/api/markets', async (req, res) => {
       appSessionId: result.appSessionId,
       allocations: result.allocations,
       prediction: result.prediction,
+      sessionPrivateKey: result.sessionPrivateKey,
     });
 
-    if (result.sessionPrivateKey && !state.sessionPrivateKey) {
-      saveState({ ...loadState(), sessionPrivateKey: result.sessionPrivateKey });
-    }
+    saveState({ ...loadState(), sessionPrivateKey: result.sessionPrivateKey });
 
     res.status(201).json({ market });
   } catch (err) {
@@ -133,12 +168,11 @@ app.post('/api/markets', async (req, res) => {
 app.post('/api/markets/:id/resolve', async (req, res) => {
   const privateKey = process.env.PRIVATE_KEY;
   const state = loadState();
-  const sessionPrivateKey = state.sessionPrivateKey;
+  const market = getMarket(state, req.params.id);
+  const sessionPrivateKey = market?.sessionPrivateKey || state.sessionPrivateKey;
   if (!privateKey || !sessionPrivateKey) {
     return res.status(500).json({ error: 'PRIVATE_KEY or session key not set' });
   }
-
-  const market = getMarket(state, req.params.id);
   if (!market) return res.status(404).json({ error: 'Market not found' });
   if (market.status === 'resolved') {
     return res.json({ market, message: 'Already resolved' });
@@ -147,10 +181,10 @@ app.post('/api/markets/:id/resolve', async (req, res) => {
   const overrideOutcome = req.query.outcome || req.body?.outcome; // WIN | LOSS
 
   try {
-    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : undefined;
+    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : 11155111;
     const result = await resolveMarket({
       privateKey,
-      rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
+      rpcUrl: process.env.RPC_URL || 'https://0xrpc.io/sep',
       wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
       chainId,
       sessionPrivateKey,

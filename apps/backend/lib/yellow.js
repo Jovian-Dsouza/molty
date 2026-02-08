@@ -93,7 +93,7 @@ function waitForAny(ws, methods, timeout = 15000) {
  */
 export async function connectAndCreateMarket({
   privateKey,
-  rpcUrl = 'https://rpc.sepolia.org',
+  rpcUrl = 'https://0xrpc.io/sep',
   wsUrl = 'wss://clearnet-sandbox.yellow.com/ws',
   chainId,
   sessionPrivateKey: existingSessionKey,
@@ -120,13 +120,14 @@ export async function connectAndCreateMarket({
     setTimeout(() => reject(new Error('WS timeout')), 10000);
   });
 
-  // Auth (production = usdc, sandbox = ytest.usd)
+  // Auth (production = usdc, sandbox = ytest.usd). Use 30-day expiry so the same key can be reused for multiple creates.
+  const SESSION_EXPIRY_SECONDS = 30 * 24 * 60 * 60;
   const authParams = {
     address: account.address,
     session_key: sessionAccount.address,
     application: APP_NAME,
     allowances: [{ asset: assetId, amount: '1000000000' }],
-    expires_at: BigInt(Math.floor(Date.now() / 1000) + 7200),
+    expires_at: BigInt(Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECONDS),
     scope: SCOPE,
   };
   ws.send(await createAuthRequestMessage(authParams));
@@ -208,7 +209,7 @@ export async function connectAndCreateMarket({
  */
 export async function resolveMarket({
   privateKey,
-  rpcUrl = 'https://rpc.sepolia.org',
+  rpcUrl = 'https://0xrpc.io/sep',
   wsUrl = 'wss://clearnet-sandbox.yellow.com/ws',
   chainId,
   sessionPrivateKey,
@@ -218,7 +219,11 @@ export async function resolveMarket({
   overrideOutcome, // 'WIN' | 'LOSS' to force (optional)
 }) {
   const account = privateKeyToAccount(privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`);
+  // Sign close with the original session key (the one that opened the app session).
   const sessionSigner = createECDSAMessageSigner(sessionPrivateKey);
+  // Use a fresh session key only for this WS auth — the original may be expired on Yellow's side.
+  const authSessionKey = generatePrivateKey();
+  const authSessionAccount = privateKeyToAccount(authSessionKey);
 
   let outcome = overrideOutcome;
   let finalPrice = prediction.entryPrice;
@@ -255,7 +260,7 @@ export async function resolveMarket({
   const walletClient = createWalletClient({ chain, transport: http(rpcUrl), account });
   const authParams = {
     address: account.address,
-    session_key: privateKeyToAccount(sessionPrivateKey).address,
+    session_key: authSessionAccount.address,
     application: APP_NAME,
     allowances: [{ asset: getAsset(wsUrl), amount: '1000000000' }],
     expires_at: BigInt(Math.floor(Date.now() / 1000) + 7200),

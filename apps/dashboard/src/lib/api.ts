@@ -67,7 +67,7 @@ export type YellowTx = {
 
 export async function fetchTransactions(
   address?: string,
-  chainId = 8453,
+  chainId = 11155111,
   limit = 30
 ): Promise<YellowTx[]> {
   const params = new URLSearchParams({ chainId: String(chainId), limit: String(limit) });
@@ -76,4 +76,18 @@ export async function fetchTransactions(
   if (!res.ok) throw new Error("Failed to fetch transactions");
   const data = await res.json();
   return data.transactions ?? [];
+}
+
+const PREDICTION_API_FOR_PRICE =
+  typeof window !== "undefined"
+    ? (process.env.NEXT_PUBLIC_PREDICTION_API_URL ?? "http://localhost:3999")
+    : process.env.NEXT_PUBLIC_PREDICTION_API_URL ?? "http://localhost:3999";
+
+export async function fetchPrice(asset: string): Promise<{ price: number }> {
+  const res = await fetch(
+    `${PREDICTION_API_FOR_PRICE}/api/price?asset=${encodeURIComponent(asset)}`
+  );
+  if (!res.ok) throw new Error("Failed to fetch price");
+  const data = await res.json();
+  return { price: data.price };
 }

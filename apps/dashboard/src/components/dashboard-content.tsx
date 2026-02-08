@@ -2,13 +2,23 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useAccount } from "wagmi";
+import { useAccount, useBalance, useChainId, useReadContract } from "wagmi";
+import { formatUnits } from "viem";
 import { fetchMarkets, fetchTransactions, type Market, type YellowTx } from "@/lib/api";
+import { CUSTODY_ADDRESS, USDC_ADDRESS, custodyAbi, erc20Abi } from "@/lib/custody";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, TrendingUp, BarChart3, CheckCircle2, DollarSign, ArrowRight, ArrowDownToLine, ArrowUpFromLine, Users, Zap } from "lucide-react";
+import { getMyBets } from "@/lib/my-bets";
+import { Plus, TrendingUp, BarChart3, CheckCircle2, XCircle, DollarSign, ArrowRight, ArrowDownToLine, ArrowUpFromLine, Users, Zap, Wallet, Clock } from "lucide-react";
+
+function chainName(chainId: number) {
+  if (chainId === 8453) return "Base";
+  if (chainId === 84532) return "Base Sepolia";
+  if (chainId === 11155111) return "Sepolia";
+  return `Chain ${chainId}`;
+}
 
 function formatAmount(amount: string) {
   return (Number(amount) / 1e6).toFixed(2);
@@ -31,10 +41,39 @@ const statCards = [
 
 export default function DashboardContent() {
   const { address } = useAccount();
+  const chainId = useChainId();
   const [markets, setMarkets] = useState<Market[]>([]);
   const [transactions, setTransactions] = useState<YellowTx[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [myBetsCount, setMyBetsCount] = useState(0);
+
+  const custodyAddr = chainId ? CUSTODY_ADDRESS[chainId] : undefined;
+  const usdcAddr = chainId ? USDC_ADDRESS[chainId] : undefined;
+
+  const { data: nativeBalance } = useBalance({ address });
+  const { data: usdcWalletBalance } = useReadContract({
+    address: usdcAddr,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: address ? [address] : undefined,
+  });
+  const { data: custodyBalances } = useReadContract({
+    address: custodyAddr,
+    abi: custodyAbi,
+    functionName: "getAccountsBalances",
+    args: address && usdcAddr ? [[address], [usdcAddr]] : undefined,
+  });
+  const custodyUsdc = custodyBalances?.[0]?.[0] ?? 0n;
+
+  useEffect(() => {
+    setMyBetsCount(getMyBets(address).length);
+  }, [address]);
+  useEffect(() => {
+    const onFocus = () => setMyBetsCount(getMyBets(address).length);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,7 +83,7 @@ export default function DashboardContent() {
       try {
         const [m, t] = await Promise.all([
           fetchMarkets(),
-          fetchTransactions(address ?? undefined, 8453, 10),
+          fetchTransactions(address ?? undefined, 11155111, 10),
         ]);
         if (!cancelled) {
           setMarkets(m);
@@ -103,18 +142,69 @@ export default function DashboardContent() {
             Prediction markets · Create and resolve · Settled in USDC
           </p>
         </div>
-        <Link href="/markets">
-          <Button size="lg" className="gap-2 rounded-xl bg-primary px-6 py-2.5 font-medium text-primary-foreground shadow-glow-sm hover:bg-primary/90">
-            <Plus className="h-5 w-5" />
-            Create market
-          </Button>
-        </Link>
+        <div className="flex gap-2">
+          <Link href="/my-bets">
+            <Button variant="outline" size="lg" className="gap-2 rounded-xl">
+              <Wallet className="h-5 w-5" />
+              My Bets {myBetsCount > 0 && `(${myBetsCount})`}
+            </Button>
+          </Link>
+          <Link href="/markets">
+            <Button size="lg" className="gap-2 rounded-xl bg-primary px-6 py-2.5 font-medium text-primary-foreground shadow-glow-sm hover:bg-primary/90">
+              <Plus className="h-5 w-5" />
+              Create market
+            </Button>
+          </Link>
+        </div>
       </div>
 
+      {/* Available balance on this chain */}
+      {address && (
+        <Card className="card-highlight border-primary/20">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Wallet className="h-4 w-4" />
+              Available balance on {chainName(chainId)}
+            </CardTitle>
+            <CardDescription>Your wallet and custody balances on the connected chain</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap items-end gap-6 text-sm">
+              <div>
+                <span className="text-muted-foreground">In wallet</span>
+                <p className="mt-0.5 font-semibold tabular-nums text-foreground">
+                  {nativeBalance ? `${Number(formatUnits(nativeBalance.value, 18)).toFixed(4)} ${nativeBalance.symbol}` : "—"}
+                </p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">USDC in wallet</span>
+                <p className="mt-0.5 font-semibold tabular-nums text-foreground">
+                  {usdcWalletBalance !== undefined ? `${(Number(usdcWalletBalance) / 1e6).toFixed(2)} USDC` : "—"}
+                </p>
+              </div>
+              {custodyAddr && (
+                <div>
+                  <span className="text-muted-foreground">USDC in custody</span>
+                  <p className="mt-0.5 font-semibold tabular-nums text-foreground">
+                    {(Number(custodyUsdc) / 1e6).toFixed(2)} USDC
+                  </p>
+                </div>
+              )}
+              <Link href="/profile">
+                <Button size="sm" variant="outline" className="gap-1.5 rounded-lg">
+                  <ArrowDownToLine className="h-3.5 w-3.5" />
+                  Deposit / Withdraw
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Live ticker */}
-      <div className="overflow-hidden rounded-xl border border-primary/20 bg-card/80 py-2">
+      <div className="overflow-hidden rounded-xl border border-primary/30 bg-card/80 py-2">
         <div className="flex animate-ticker gap-8 whitespace-nowrap text-sm text-muted-foreground">
-          <span className="shrink-0 rounded bg-win/20 px-2 py-0.5 font-medium text-win">LIVE</span>
+          <span className="shrink-0 rounded bg-primary/20 px-2 py-0.5 font-medium text-primary">LIVE</span>
           {tickerItems.map((item, i) => (
             <span key={i} className={item.win ? "text-win" : ""}>
               {item.text}
@@ -226,12 +316,24 @@ export default function DashboardContent() {
                         )}
                       </p>
                     </div>
-                    <Badge
-                      variant="secondary"
-                      className={m.status === "resolved" ? (m.outcome === "WIN" ? "bg-win text-win border-win/30" : "bg-loss text-loss border-loss/30") : ""}
-                    >
-                      {m.status === "resolved" ? m.outcome : "Open"}
-                    </Badge>
+                    {m.status === "resolved" ? (
+                      m.outcome === "WIN" ? (
+                        <Badge variant="secondary" className="gap-1 bg-win/15 text-win border-win/30 px-2.5 py-1">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Won
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="gap-1 bg-loss/15 text-loss border-loss/30 px-2.5 py-1">
+                          <XCircle className="h-3.5 w-3.5" />
+                          Lost
+                        </Badge>
+                      )
+                    ) : (
+                      <Badge variant="secondary" className="gap-1 bg-primary/15 text-primary border-primary/30 px-2.5 py-1">
+                        <Clock className="h-3.5 w-3.5" />
+                        Live
+                      </Badge>
+                    )}
                   </li>
                 ))}
               </ul>

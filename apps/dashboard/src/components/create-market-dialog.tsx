@@ -48,12 +48,13 @@ export function CreateMarketDialog({ onSuccess, trigger }: CreateMarketDialogPro
         asset,
         direction,
         targetPrice: targetPrice ? parseFloat(targetPrice) : undefined,
-        amount,
+        amount: amount || "1000000",
         expirySeconds: 86400,
       });
       setOpen(false);
       setQuestion("");
       setTargetPrice("");
+      setAmount("1000000");
       onSuccess?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create");
@@ -78,33 +79,34 @@ export function CreateMarketDialog({ onSuccess, trigger }: CreateMarketDialogPro
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent showClose={true}>
+      <DialogContent className="border-primary/30 sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Create prediction market</DialogTitle>
-          <DialogDescription>
-            Create a new market. The bet is placed off-chain via Yellow; resolve from this dashboard.
+          <DialogTitle className="text-lg">Create prediction market</DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground">
+            Set the question, asset, and target. Bet is placed off-chain; resolve from Markets or My Bets.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4 pt-1">
           {error && (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <p className="rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
             </p>
           )}
-          <div className="space-y-2">
-            <Label htmlFor="question">Question (optional)</Label>
+          <div className="space-y-1.5">
+            <Label htmlFor="question" className="text-sm font-medium">Question (optional)</Label>
             <Input
               id="question"
               placeholder="e.g. Will ETH be above $3,500 by EOD?"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
+              className="border-border/80"
             />
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Asset</Label>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-sm font-medium">Asset</Label>
               <Select value={asset} onValueChange={setAsset}>
-                <SelectTrigger>
+                <SelectTrigger className="border-border/80">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -114,22 +116,22 @@ export function CreateMarketDialog({ onSuccess, trigger }: CreateMarketDialogPro
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>Direction</Label>
+            <div className="space-y-1.5">
+              <Label className="text-sm font-medium">Side</Label>
               <Select value={direction} onValueChange={(v) => setDirection(v as "LONG" | "SHORT")}>
-                <SelectTrigger>
+                <SelectTrigger className="border-border/80">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="LONG">LONG</SelectItem>
-                  <SelectItem value="SHORT">SHORT</SelectItem>
+                  <SelectItem value="LONG">Up</SelectItem>
+                  <SelectItem value="SHORT">Down</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="target">Target price (optional)</Label>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="target" className="text-sm font-medium">Target price</Label>
               <Input
                 id="target"
                 type="number"
@@ -137,26 +139,36 @@ export function CreateMarketDialog({ onSuccess, trigger }: CreateMarketDialogPro
                 placeholder="3500"
                 value={targetPrice}
                 onChange={(e) => setTargetPrice(e.target.value)}
+                className="border-border/80"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="amount">Amount (6 decimals)</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="amount" className="text-sm font-medium">Amount (USDC)</Label>
               <Input
                 id="amount"
-                placeholder="1000000"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="1"
+                value={amount ? (Number(amount) / 1e6).toFixed(2) : ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const parsed = parseFloat(v);
+                  if (v === "" || isNaN(parsed)) setAmount("");
+                  else setAmount(String(Math.round(parsed * 1e6)));
+                }}
+                className="border-border/80"
               />
               <p className="text-xs text-muted-foreground">
-                {(Number(amount) / 1e6).toFixed(2)} USDC
+                {amount ? `${(Number(amount) / 1e6).toFixed(2)} USDC` : "—"}
               </p>
             </div>
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+          <DialogFooter className="gap-2 pt-2 sm:pt-2">
+            <Button type="button" variant="outline" onClick={() => setOpen(false)} className="border-border/80">
               Cancel
             </Button>
-            <Button type="submit" disabled={loading}>
+            <Button type="submit" disabled={loading || !(amount || "1000000")} className="bg-primary hover:bg-primary/90">
               {loading ? "Creating…" : "Create"}
             </Button>
           </DialogFooter>

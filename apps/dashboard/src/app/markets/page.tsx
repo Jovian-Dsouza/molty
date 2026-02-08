@@ -74,7 +74,7 @@ export default function MarketsPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Markets</h1>
           <p className="text-muted-foreground">
-            Create and resolve prediction markets · By price or manual
+            Create and resolve prediction markets · Resolve uses current price
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -106,11 +106,9 @@ export default function MarketsPage() {
 
       <Card className="card-highlight border-primary/20">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">How resolution works</CardTitle>
+          <CardTitle className="text-base">Resolution</CardTitle>
           <CardDescription>
-            <strong>By price (default):</strong> Resolve compares the asset&apos;s current price to the target. LONG wins if price ≥ target; SHORT wins if price ≤ target.
-            <br />
-            <strong>Manual:</strong> Use &quot;Resolve as WIN&quot; or &quot;Resolve as LOSS&quot; to override the outcome (e.g. for testing or disputed markets).
+            Resolve uses the asset&apos;s current price: Up wins if price ≥ target, Down wins if price ≤ target.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -142,7 +140,7 @@ export default function MarketsPage() {
                   <TableHead>Amount</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="whitespace-nowrap">Final price</TableHead>
-                  <TableHead className="w-[220px]">Action</TableHead>
+                  <TableHead className="w-[120px]">Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -172,34 +170,14 @@ export default function MarketsPage() {
                     </TableCell>
                     <TableCell>
                       {m.status === "open" && (
-                        <div className="flex flex-wrap gap-1">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleResolve(m.id)}
-                            disabled={resolvingId !== null}
-                          >
-                            {resolvingId === m.id ? "…" : "By price"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="text-win hover:bg-win/10 hover:text-win"
-                            onClick={() => handleResolve(m.id, "WIN")}
-                            disabled={resolvingId !== null}
-                          >
-                            WIN
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="text-loss hover:bg-loss/10 hover:text-loss"
-                            onClick={() => handleResolve(m.id, "LOSS")}
-                            disabled={resolvingId !== null}
-                          >
-                            LOSS
-                          </Button>
-                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => handleResolve(m.id)}
+                          disabled={resolvingId !== null}
+                          className="bg-primary hover:bg-primary/90"
+                        >
+                          {resolvingId === m.id ? "Resolving…" : "Resolve"}
+                        </Button>
                       )}
                     </TableCell>
                   </TableRow>
