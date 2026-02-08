@@ -342,7 +342,7 @@ def anim_dying(stop_event: threading.Event):
         time.sleep(0.2)
     # Full speed for remaining time
     drive(1.0, 1.0)
-    time.sleep(2.2)
+    time.sleep(10)
     stop_motors()
 
 
