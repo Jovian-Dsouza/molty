@@ -342,13 +342,12 @@ def anim_dying(stop_event: threading.Event):
         (120, 60), (60, 120), (150, 150), (30, 30)
     ]
 
+    drive(1.0, -1.0)
     for i, speed in enumerate(speeds):
-        drive(speed, -speed)
         # Rapid servo movements during acceleration
         set_servos(*servo_positions[i % len(servo_positions)])
-        time.sleep(0.15)
         set_servos(*servo_positions[(i + 1) % len(servo_positions)])
-        time.sleep(0.15)
+
 
     # Full speed spin with continuous dramatic waving
     drive(1.0, -1.0)
