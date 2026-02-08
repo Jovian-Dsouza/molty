@@ -249,44 +249,48 @@ async function humeStreamSpeak(text: string): Promise<{ ok: boolean; error?: str
     let jsonBuf = "";
     let chunkCount = 0;
 
+    const processJson = (raw: string) => {
+      try {
+        const chunk = JSON.parse(raw) as { type?: string; audio?: string };
+        if (chunk.type === "audio" && chunk.audio) {
+          chunkCount++;
+          console.log(`[Hume TTS] Chunk #${chunkCount}, base64 len=${chunk.audio.length}`);
+          broadcastHume("hume:audio-chunk", chunk.audio);
+        } else {
+          console.log(`[Hume TTS] Non-audio chunk type=${chunk.type}`);
+        }
+      } catch {
+        console.log(`[Hume TTS] Failed to parse line (len=${raw.length}): ${raw.slice(0, 200)}`);
+      }
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      jsonBuf += decoder.decode(value, { stream: true });
+      const decoded = decoder.decode(value, { stream: true });
+      jsonBuf += decoded;
 
-      // Split on newlines — each complete line is one JSON object
+      // Try splitting on newlines (newline-delimited JSON)
       const lines = jsonBuf.split("\n");
       jsonBuf = lines.pop()!; // keep incomplete trailing line
 
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        try {
-          const chunk = JSON.parse(trimmed) as { type?: string; audio?: string };
-          if (chunk.type === "audio" && chunk.audio) {
-            chunkCount++;
-            console.log(`[Hume TTS] Chunk #${chunkCount}, base64 len=${chunk.audio.length}`);
-            broadcastHume("hume:audio-chunk", chunk.audio);
-          }
-        } catch {
-          // skip malformed lines
-        }
+        processJson(trimmed);
       }
     }
 
     // Process any remaining data in the buffer
-    if (jsonBuf.trim()) {
-      try {
-        const chunk = JSON.parse(jsonBuf.trim()) as { type?: string; audio?: string };
-        if (chunk.type === "audio" && chunk.audio) {
-          chunkCount++;
-          console.log(`[Hume TTS] Chunk #${chunkCount} (final), base64 len=${chunk.audio.length}`);
-          broadcastHume("hume:audio-chunk", chunk.audio);
-        }
-      } catch {
-        // skip
-      }
+    const remaining = jsonBuf.trim();
+    if (remaining) {
+      processJson(remaining);
+    }
+
+    // If still 0 chunks, log the raw buffer length for debugging
+    if (chunkCount === 0) {
+      console.warn(`[Hume TTS] 0 chunks extracted. Total buffered bytes: ${jsonBuf.length}`);
     }
 
     console.log(`[Hume TTS] Stream complete — ${chunkCount} chunks sent`);
