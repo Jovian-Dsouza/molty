@@ -1,0 +1,126 @@
+sequenceDiagram
+    actor User
+    participant Robot as Molty Robot
+    participant Kiosk as Kiosk App
+    participant OC as OpenClaw Gateway
+    participant LLM as Claude LLM
+    participant Soul as SOUL.md
+    box rgb(40,60,80) Skills Layer
+        participant SE as molty-events
+        participant SS as molty-swap
+        participant SP as molty-predict
+        participant SA as molty-arc
+    end
+    participant Stork as Stork Oracle
+    participant LIFI as LI.FI API
+    participant Backend as Backend API
+    participant Yellow as Yellow Network
+    participant Base as Base Chain
+    participant Arc as Arc Chain
+    participant USYC as USYC Teller
+
+    Note over User, USYC: ACT 1 — Price Check via Stork Oracle
+
+    User ->> Robot: "What's ETH trading at?"
+    Robot ->> Kiosk: Audio stream
+    Kiosk ->> OC: Transcript via WebSocket
+    OC ->> Soul: Load identity + voice rules
+    OC ->> LLM: Process intent
+    LLM ->> SE: fetchPrice("ETHUSD")
+    SE ->> Stork: GET /v1/prices/latest?assets=ETHUSD
+    Stork -->> SE: Quantized price (BigInt / 1e18)
+    SE -->> LLM: {asset: "ETHUSD", price: 2650.42}
+    LLM -->> OC: "ETH is at $2,650! [face:excited]"
+    OC -->> Kiosk: Response + face directive
+    Kiosk ->> Kiosk: Parse [face:excited]
+    Kiosk -->> Robot: TTS audio + face animation
+    Robot -->> User: Voice + excited face
+
+    Note over User, USYC: ACT 2 — Cross-Chain Swap via LI.FI
+
+    User ->> Robot: "Swap 0.001 ETH to USDC on Base"
+    Robot ->> Kiosk: Audio stream
+    Kiosk ->> OC: Transcript
+    OC ->> LLM: Process intent
+    LLM ->> SS: swap({fromToken:"ETH", toToken:"USDC", amount:"0.001"})
+    SS ->> LIFI: GET /quote (ETH→USDC, Base 8453)
+    LIFI -->> SS: Quote + transactionRequest
+    SS ->> Base: sendTransaction(swap tx)
+    Base -->> SS: tx receipt (confirmed)
+    SS ->> LIFI: GET /status (poll until DONE)
+    LIFI -->> SS: {status: "DONE", receiving: 2.65 USDC}
+    SS -->> LLM: {txHash, toAmount: "2.65", explorerUrl}
+    LLM -->> OC: "Done! Swapped 0.001 ETH for 2.65 USDC [face:celebrating]"
+    OC -->> Robot: TTS + celebrating face
+
+    Note over User, USYC: ACT 3 — Prediction Market via Yellow State Channels
+
+    User ->> Robot: "Bet 5 USDC on ETH above $2,700"
+    Robot ->> Kiosk: Audio stream
+    Kiosk ->> OC: Transcript
+    OC ->> LLM: Process intent
+    LLM ->> SP: createMarket({asset:"ETHUSD", direction:"LONG", targetPrice:2700, amount:"5000000"})
+    SP ->> Backend: POST /api/markets
+    Backend ->> Yellow: WebSocket: authenticate (EIP-712 sig)
+    Yellow -->> Backend: Auth OK + session
+    Backend ->> Yellow: create_app_session (off-chain state)
+    Yellow -->> Backend: appSessionId
+    Backend ->> Backend: Store in state.json
+    Backend -->> SP: {market: {id, question, status:"open"}}
+    SP -->> LLM: Market created
+    LLM -->> OC: "Bet 5 USDC that ETH goes above $2,700! [face:excited]"
+    OC -->> Robot: TTS + excited face
+
+    Note over User, USYC: Resolution and Settlement
+
+    User ->> Robot: "Resolve my ETH bet"
+    Robot ->> OC: Transcript
+    OC ->> LLM: Process intent
+    LLM ->> SP: resolveMarket(marketId)
+    SP ->> Backend: POST /api/markets/:id/resolve
+    Backend ->> Backend: Fetch price from CoinGecko
+    Backend ->> Backend: Compare: price >= 2700 → WIN
+    Backend ->> Yellow: close_app_session (final allocations)
+    Yellow ->> Base: Settlement tx (custody update)
+    Base -->> Yellow: Confirmed on-chain
+    Yellow -->> Backend: Session closed
+    Backend -->> SP: {outcome: "WIN", finalPrice: 2718}
+    SP -->> LLM: Result
+    LLM -->> OC: "We won! ETH hit $2,718! Shell yeah! [face:celebrating]"
+    OC -->> Robot: TTS + celebrating face + arm wave
+
+    Note over User, USYC: ACT 4 — Arc Treasury and Autonomous Rebalancing
+
+    User ->> Robot: "Move 50 USDC into US Treasuries"
+    Robot ->> OC: Transcript
+    OC ->> LLM: Process intent
+    LLM ->> SA: depositToYield("50")
+    SA ->> Arc: readContract: USDC.allowance()
+    Arc -->> SA: Current allowance
+    SA ->> Arc: writeContract: USDC.approve(Teller, 50e6)
+    Arc -->> SA: Approve confirmed
+    SA ->> Arc: writeContract: Teller.deposit(50e6, walletAddr)
+    Arc -->> SA: Deposit confirmed, USYC minted
+    SA -->> LLM: {txHash, usdcDeposited: "50", explorerUrl}
+    LLM -->> OC: "Deposited 50 USDC into USYC. Earning 4.5%! [face:excited]"
+    OC -->> Robot: TTS + excited face
+
+    Note over User, USYC: Autonomous Rebalancing (Oracle-Driven Decision)
+
+    User ->> Robot: "Rebalance my treasury"
+    Robot ->> OC: Transcript
+    OC ->> LLM: Process intent
+    LLM ->> SA: autoRebalance()
+    SA ->> Stork: GET /v1/prices/latest?assets=ETHUSD,BTCUSD,SOLUSD
+    Stork -->> SA: Live prices
+    SA ->> SA: Calculate avg % change from reference
+    SA ->> SA: Signal: BEARISH (avg -4.1%)
+    SA ->> SA: Target: 70% USYC / 30% USDC
+    SA ->> Arc: readContract: USDC.balanceOf + USYC.balanceOf
+    Arc -->> SA: Current balances
+    SA ->> SA: Calculate: need to deposit more USDC to USYC
+    SA ->> Arc: USDC.approve then Teller.deposit
+    Arc -->> SA: Rebalance tx confirmed
+    SA -->> LLM: {marketSignal:"BEARISH", action:"DEPOSITED", explanation:"..."}
+    LLM -->> OC: "Market bearish — ETH -4.2%, BTC -3.8%. Moved 70% to USYC. [face:watching]"
+    OC -->> Robot: TTS + watching face

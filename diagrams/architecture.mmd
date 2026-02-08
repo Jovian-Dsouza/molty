@@ -1,0 +1,97 @@
+graph TB
+    subgraph physical [Physical Layer]
+        Robot["Molty Robot<br/>ESP32 + RPi"]
+        Mic["Microphone"]
+        Speaker["Speaker + TTS"]
+        Screen["LED Screen<br/>Animated Face"]
+        Motors["Arms + Wheels"]
+    end
+
+    subgraph kiosk [Kiosk App - React + Electron]
+        MoltyFace["MoltyFace Component<br/>9 Expression States"]
+        VoiceIO["Voice I/O Handler"]
+        StateHook["useMoltyState Hook"]
+        FaceParser["Face Directive Parser<br/>[face:STATE] extraction"]
+    end
+
+    subgraph openclaw [OpenClaw Gateway - AWS EC2]
+        LLM["Claude LLM"]
+        Soul["SOUL.md<br/>Identity + Personality + Voice Rules"]
+        Agents["AGENTS.md<br/>Behavioral Rules + Skill Routing"]
+        Memory["memory.md<br/>Long-term Context"]
+
+        subgraph skills [Skill Modules - TypeScript]
+            SkillEvents["molty-events<br/>Stork Oracle Prices"]
+            SkillSwap["molty-swap<br/>LI.FI Token Routing"]
+            SkillPredict["molty-predict<br/>Yellow State Channels"]
+            SkillArc["molty-arc<br/>Arc Treasury + USYC"]
+            SkillPortfolio["molty-portfolio<br/>Multi-chain Balances"]
+        end
+    end
+
+    subgraph backend [Backend API - Express]
+        MarketAPI["POST /api/markets<br/>Create Prediction"]
+        ResolveAPI["POST /api/markets/:id/resolve<br/>Settle Market"]
+        PriceAPI["GET /api/price<br/>CoinGecko Feed"]
+        StateStore["state.json<br/>Market Persistence"]
+    end
+
+    subgraph external [External Services]
+        Stork["Stork Oracle<br/>REST API"]
+        LIFI["LI.FI Aggregator<br/>Quote + Execute"]
+        YellowWS["Yellow ClearNet<br/>WebSocket"]
+        ArcRPC["Arc Testnet<br/>RPC"]
+    end
+
+    subgraph chains [On-Chain Settlement]
+        Base["Base Mainnet<br/>Chain 8453"]
+        Arc["Arc Testnet<br/>Chain 5042002"]
+
+        subgraph baseContracts [Base Contracts]
+            YellowCustody["Yellow Custody<br/>0x490f...8b6"]
+            BaseUSDC["USDC<br/>0x8335...913"]
+        end
+
+        subgraph arcContracts [Arc Contracts]
+            ArcUSDC["USDC Native<br/>0x3600...000"]
+            USYC["USYC Token<br/>US Treasury RWA"]
+            Teller["USYC Teller<br/>Deposit + Redeem"]
+        end
+    end
+
+    Robot ---|WebSocket| StateHook
+    Mic --> VoiceIO
+    VoiceIO --> StateHook
+    StateHook --> FaceParser
+    FaceParser --> MoltyFace
+    MoltyFace --> Screen
+    StateHook --> Speaker
+    StateHook --> Motors
+
+    StateHook ---|WebSocket| LLM
+    LLM --> Soul
+    LLM --> Agents
+    LLM --> Memory
+    LLM --> skills
+
+    SkillEvents --> Stork
+    SkillSwap --> LIFI
+    SkillPredict --> MarketAPI
+    SkillPredict --> ResolveAPI
+    SkillArc --> ArcRPC
+    SkillPortfolio --> Base
+    SkillPortfolio --> Arc
+
+    MarketAPI --> YellowWS
+    ResolveAPI --> YellowWS
+    ResolveAPI --> PriceAPI
+    MarketAPI --> StateStore
+    ResolveAPI --> StateStore
+
+    LIFI --> Base
+    YellowWS --> YellowCustody
+    YellowCustody --> BaseUSDC
+    ArcRPC --> ArcUSDC
+    ArcRPC --> Teller
+    Teller --> USYC
+    Teller --> ArcUSDC
