@@ -88,10 +88,12 @@ app.post('/api/markets', async (req, res) => {
   }
 
   try {
+    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : undefined;
     const result = await connectAndCreateMarket({
       privateKey,
       rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
       wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
+      chainId,
       sessionPrivateKey: state.sessionPrivateKey,
       question: question || `Will ${asset} go ${direction === 'LONG' ? 'above' : 'below'} $${targetPrice}?`,
       asset,
@@ -145,10 +147,12 @@ app.post('/api/markets/:id/resolve', async (req, res) => {
   const overrideOutcome = req.query.outcome || req.body?.outcome; // WIN | LOSS
 
   try {
+    const chainId = process.env.CHAIN_ID != null ? parseInt(process.env.CHAIN_ID, 10) : undefined;
     const result = await resolveMarket({
       privateKey,
       rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
       wsUrl: process.env.YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws',
+      chainId,
       sessionPrivateKey,
       appSessionId: market.appSessionId,
       allocations: market.allocations,

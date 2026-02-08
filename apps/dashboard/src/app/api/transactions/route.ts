@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createPublicClient, fallback, http, parseAbiItem, type Chain } from "viem";
-import { base, sepolia } from "viem/chains";
+import { base, baseSepolia, sepolia } from "viem/chains";
 
 const CUSTODY_BASE = "0x490fb189DdE3a01B00be9BA5F41e3447FbC838b6" as const;
+const CUSTODY_BASE_SEPOLIA = "0x5bfEa1aD034512b43541fB2346928ca7511e75D3" as const;
 const CUSTODY_SEPOLIA = "0x6F71a38d919ad713D0AfE0eB712b95064Fc2616f" as const;
 
-// Use fallback RPCs so 503 on one (e.g. mainnet.base.org) doesn't break the API
 const BASE_RPCS = [
   "https://mainnet.base.org",
   "https://base.llamarpc.com",
@@ -15,6 +15,7 @@ const BASE_RPCS = [
 
 const chains: Record<number, { chain: Chain; transport: ReturnType<typeof http> | ReturnType<typeof fallback> }> = {
   8453: { chain: base, transport: fallback(BASE_RPCS.map((url) => http(url))) },
+  84532: { chain: baseSepolia, transport: http("https://sepolia.base.org") },
   11155111: { chain: sepolia, transport: http("https://rpc.sepolia.org") },
 };
 
@@ -34,7 +35,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unsupported chainId" }, { status: 400 });
   }
 
-  const custody = chainId === 8453 ? CUSTODY_BASE : CUSTODY_SEPOLIA;
+  const custody =
+    chainId === 8453 ? CUSTODY_BASE : chainId === 84532 ? CUSTODY_BASE_SEPOLIA : CUSTODY_SEPOLIA;
   const client = createPublicClient({
     chain: cfg.chain,
     transport: cfg.transport,

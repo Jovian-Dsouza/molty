@@ -57,13 +57,15 @@ export function useMoltyState() {
   const conversationModeRef = useRef(false); // true from Start click until Stop — skips wake word entirely
   const [isInConversation, setIsInConversation] = useState(false);
   const [processTrigger, setProcessTrigger] = useState(0);
+  /** While true, face is locked to "thinking" — prevents other code from changing it until TTS starts. */
+  const thinkingLockRef = useRef(false);
 
   const { isListening, transcript, setTranscript, pause, resume } =
     useVoice(isReady);
 
   // Update face based on voice state
   useEffect(() => {
-    if (!processingRef.current && isListening) {
+    if (!processingRef.current && !thinkingLockRef.current && isListening) {
       setFace("listening");
     }
   }, [isListening]);
@@ -114,6 +116,7 @@ export function useMoltyState() {
     // Reset all processing state
     processingRef.current = false;
     speakingRef.current = false;
+    thinkingLockRef.current = false;
     setIsTalking(false);
     setIsSending(false);
     if (responseTimeoutRef.current) {
@@ -308,6 +311,7 @@ export function useMoltyState() {
 
       // Pause mic while waiting for response (avoid sending silence to transcriber)
       pause();
+      thinkingLockRef.current = true;
       setFace("thinking");
       setSubtitle(`Sending: "${text}"`);
       setIsSending(true);
@@ -319,6 +323,7 @@ export function useMoltyState() {
         if (processingRef.current) {
           console.log("[Molty] Response timeout — resuming listening");
           processingRef.current = false;
+          thinkingLockRef.current = false;
           setIsSending(false);
           setFace("listening");
           setSubtitle("");
@@ -472,8 +477,8 @@ export function useMoltyState() {
             // Strip markdown and face directives so captions stay readable during streaming
             const stripped = stripMarkdown(accumulated);
             const { cleaned, face: streamFace } = parseFaceDirectives(stripped);
-            // Apply face directive as soon as it arrives during streaming
-            if (streamFace) setFace(streamFace);
+            // Apply face directive as soon as it arrives during streaming (skip if thinking lock is active)
+            if (streamFace && !thinkingLockRef.current) setFace(streamFace);
             const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
             setSubtitle(display);
           }
@@ -500,6 +505,7 @@ export function useMoltyState() {
           if (!finalText.trim()) {
             // Empty response — resume listening
             processingRef.current = false;
+            thinkingLockRef.current = false;
             if (responseTimeoutRef.current) {
               clearTimeout(responseTimeoutRef.current);
               responseTimeoutRef.current = null;
@@ -511,7 +517,9 @@ export function useMoltyState() {
             return;
           }
 
-          // Apply the agent's face directive (or default to "idle" while talking)
+          // Release the thinking lock now that TTS is about to start,
+          // then apply the agent's face directive
+          thinkingLockRef.current = false;
           if (agentFace) {
             setFace(agentFace);
           }
@@ -580,6 +588,7 @@ export function useMoltyState() {
           currentRunId = null;
           accumulated = "";
           processingRef.current = false;
+          thinkingLockRef.current = false;
           setIsSending(false);
           if (responseTimeoutRef.current) {
             clearTimeout(responseTimeoutRef.current);
@@ -628,11 +637,16 @@ export function useMoltyState() {
     init();
   }, []);
 
-  // Once connected, mark as ready for voice
+  // Once connected, mark as ready for voice and auto-enter conversation mode
   useEffect(() => {
     if (isConnected && !isReady) {
-      console.log("[Molty] OpenClaw connected — starting voice");
+      console.log("[Molty] OpenClaw connected — starting voice & conversation mode");
       setIsReady(true);
+      // Auto-enter conversation mode (no touch needed — Pi touchscreen doesn't work)
+      conversationModeRef.current = true;
+      setIsInConversation(true);
+      setFace("listening");
+      setSubtitle("I'm listening...");
     }
   }, [isConnected, isReady]);
 

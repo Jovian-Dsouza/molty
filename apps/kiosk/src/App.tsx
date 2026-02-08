@@ -60,29 +60,6 @@ function App() {
         isTalking={molty.isTalking}
         subtitle={molty.subtitle || undefined}
       />
-      {molty.isBusy ? (
-        <button
-          className="stop-btn"
-          onClick={molty.stopAndResume}
-          aria-label="Stop"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-            <rect width="14" height="14" rx="2" />
-          </svg>
-          Stop
-        </button>
-      ) : (
-        <button
-          className="start-btn"
-          onClick={molty.manualStart}
-          aria-label="Start"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-            <polygon points="2,0 14,7 2,14" />
-          </svg>
-          Start
-        </button>
-      )}
     </div>
   )
 }

@@ -22,12 +22,14 @@ function formatAmount(amount: string) {
 
 function blockExplorerUrl(txHash: string, chainId: number) {
   if (chainId === 8453) return `https://basescan.org/tx/${txHash}`;
+  if (chainId === 84532) return `https://sepolia.basescan.org/tx/${txHash}`;
   if (chainId === 11155111) return `https://sepolia.etherscan.io/tx/${txHash}`;
   return "#";
 }
 
 function chainName(chainId: number) {
   if (chainId === 8453) return "Base";
+  if (chainId === 84532) return "Base Sepolia";
   if (chainId === 11155111) return "Sepolia";
   return `Chain ${chainId}`;
 }
@@ -72,6 +74,7 @@ export default function TransactionsContent() {
             onChange={(e) => setChainId(parseInt(e.target.value, 10))}
           >
             <option value={8453}>Base</option>
+            <option value={84532}>Base Sepolia</option>
             <option value={11155111}>Sepolia</option>
           </select>
           <Button variant="outline" size="icon" onClick={load} disabled={loading}>
