@@ -12,10 +12,11 @@ GPIO Pins:
   Servo 2 (right claw): GPIO 21
 
 Command protocol (stdin, one JSON per line):
-  {"command": "set_emotion", "emotion": "celebrating"}
+  {"command": "set_emotion", "emotion": "dying"}
   {"command": "set_servos", "angle1": 90, "angle2": 90}
   {"command": "stop"}
   {"command": "shutdown"}
+  {"command": "dying"}
 
 Status output (stdout, one JSON per line):
   {"type": "status", "status": "ready", "message": "..."}
@@ -326,23 +327,40 @@ def anim_celebrating(stop_event: threading.Event):
 
 
 def anim_dying(stop_event: threading.Event):
-    """1s pause, then accelerate forward to full speed for 3s (off the table!)."""
+    """Dramatic dying animation with continuous flailing servo motion."""
     # Note: dying is a priority override — stop_event is ignored
     stop_motors()
-    # Slowly close claws during pause
+
+    # Initial dramatic pose
     set_servos(90, 90)
-    time.sleep(0.5)
-    set_servos(45, 45)
     time.sleep(0.3)
-    set_servos(0, 0)
-    time.sleep(0.2)
-    # Ramp up with claws closed
-    for speed in [0.3, 0.5, 0.7, 1.0]:
-        drive(speed, speed)
+
+    # Ramp up motors with frantic servo flailing
+    speeds = [0.3, 0.5, 0.7, 1.0]
+    servo_positions = [
+        (150, 30), (30, 150), (180, 0), (0, 180),
+        (120, 60), (60, 120), (150, 150), (30, 30)
+    ]
+
+    for i, speed in enumerate(speeds):
+        drive(speed, -speed)
+        # Rapid servo movements during acceleration
+        set_servos(*servo_positions[i % len(servo_positions)])
+        time.sleep(0.15)
+        set_servos(*servo_positions[(i + 1) % len(servo_positions)])
+        time.sleep(0.15)
+
+    # Full speed spin with continuous dramatic waving
+    drive(1.0, -1.0)
+    end_time = time.time() + 10
+    position_index = 0
+
+    while time.time() < end_time:
+        # Continuous alternating servo motion
+        set_servos(*servo_positions[position_index % len(servo_positions)])
         time.sleep(0.2)
-    # Full speed for remaining time
-    drive(1.0, 1.0)
-    time.sleep(10)
+        position_index += 1
+
     stop_motors()
 
 
