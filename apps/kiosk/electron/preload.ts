@@ -69,6 +69,8 @@ contextBridge.exposeInMainWorld('motors', {
     ipcRenderer.invoke('motors:set-emotion', emotion) as Promise<{ ok: boolean; error?: string }>,
   stop: () =>
     ipcRenderer.invoke('motors:stop') as Promise<{ ok: boolean; error?: string }>,
+  setServos: (angle1: number, angle2: number) =>
+    ipcRenderer.invoke('motors:set-servos', angle1, angle2) as Promise<{ ok: boolean; error?: string }>,
   onStatus: (handler: (status: { type: string; status: string; message: string }) => void) =>
     subscribe<{ type: string; status: string; message: string }>('motors:status', handler),
 })

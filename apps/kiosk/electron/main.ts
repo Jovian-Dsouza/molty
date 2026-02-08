@@ -914,6 +914,9 @@ ipcMain.handle("motors:set-emotion", (_event, emotion: string) =>
   sendMotorCommand({ command: "set_emotion", emotion })
 );
 ipcMain.handle("motors:stop", () => sendMotorCommand({ command: "stop" }));
+ipcMain.handle("motors:set-servos", (_event, angle1: number, angle2: number) =>
+  sendMotorCommand({ command: "set_servos", angle1, angle2 })
+);
 
 // ── App Lifecycle ─────────────────────────────────────────────────────────
 
