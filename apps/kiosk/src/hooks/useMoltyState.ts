@@ -70,6 +70,15 @@ export function useMoltyState() {
     }
   }, [isListening]);
 
+  // Sync motors with face expression changes
+  useEffect(() => {
+    if (window.motors) {
+      window.motors.setEmotion(face).catch((err) => {
+        console.warn("[Molty] Motor setEmotion failed:", err);
+      });
+    }
+  }, [face]);
+
   // ── Interrupt: cancel TTS, abort gateway run, reset state ─────────────
 
   const interrupt = useCallback(() => {

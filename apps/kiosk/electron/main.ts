@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
+import { spawn, type ChildProcess } from "node:child_process";
 import { AssemblyAI } from "assemblyai";
 import {
   getOrCreateDeviceKey,
@@ -717,6 +718,117 @@ function sendGateway(payload: unknown): { ok: boolean; error?: string } {
   }
 }
 
+// ── Motor Controller (Python subprocess) ──────────────────────────────────
+
+let motorProcess: ChildProcess | null = null;
+let motorReady = false;
+
+function startMotorController() {
+  const scriptPath = path.join(
+    process.env.APP_ROOT!,
+    "..",
+    "..",
+    "scripts",
+    "motor_controller.py"
+  );
+
+  console.log("[Motors] Starting motor controller:", scriptPath);
+
+  try {
+    motorProcess = spawn("python3", [scriptPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (err) {
+    console.error("[Motors] Failed to spawn python3:", err);
+    return;
+  }
+
+  motorProcess.on("error", (err) => {
+    console.error("[Motors] Process error:", err.message);
+    motorProcess = null;
+    motorReady = false;
+  });
+
+  motorProcess.on("exit", (code, signal) => {
+    console.log("[Motors] Process exited", code != null ? `code=${code}` : "", signal ?? "");
+    motorProcess = null;
+    motorReady = false;
+  });
+
+  // Parse stdout for status JSON lines
+  let stdoutBuf = "";
+  motorProcess.stdout!.on("data", (chunk: Buffer) => {
+    stdoutBuf += chunk.toString();
+    const lines = stdoutBuf.split("\n");
+    stdoutBuf = lines.pop()!;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const status = JSON.parse(trimmed) as { type: string; status: string; message: string };
+        console.log(`[Motors] Status: ${status.status} ${status.message}`);
+        if (status.status === "ready") {
+          motorReady = true;
+        }
+        for (const w of BrowserWindow.getAllWindows()) {
+          w.webContents.send("motors:status", status);
+        }
+      } catch {
+        console.log("[Motors] stdout:", trimmed);
+      }
+    }
+  });
+
+  motorProcess.stderr!.on("data", (chunk: Buffer) => {
+    console.error("[Motors] stderr:", chunk.toString().trim());
+  });
+}
+
+function sendMotorCommand(cmd: Record<string, unknown>): { ok: boolean; error?: string } {
+  if (!motorProcess || !motorProcess.stdin || !motorReady) {
+    return { ok: false, error: "Motor controller not ready" };
+  }
+  try {
+    motorProcess.stdin.write(JSON.stringify(cmd) + "\n");
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to send motor command";
+    console.error("[Motors] Send error:", message);
+    return { ok: false, error: message };
+  }
+}
+
+function stopMotorController(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!motorProcess) {
+      resolve();
+      return;
+    }
+
+    // Send shutdown command
+    try {
+      motorProcess.stdin!.write(JSON.stringify({ command: "shutdown" }) + "\n");
+    } catch {
+      // stdin may already be closed
+    }
+
+    // Give it 2s to exit gracefully, then SIGTERM
+    const timeout = setTimeout(() => {
+      if (motorProcess) {
+        console.log("[Motors] Sending SIGTERM after timeout");
+        motorProcess.kill("SIGTERM");
+      }
+      resolve();
+    }, 2000);
+
+    motorProcess.on("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+}
+
 // ── Window Creation ───────────────────────────────────────────────────────
 
 function createWindow() {
@@ -796,11 +908,22 @@ ipcMain.on("openclaw:audio-chunk", (_event, pcmData: ArrayBuffer) => {
   }
 });
 
+// Motor controller
+ipcMain.handle("motors:command", (_event, cmd: Record<string, unknown>) => sendMotorCommand(cmd));
+ipcMain.handle("motors:set-emotion", (_event, emotion: string) =>
+  sendMotorCommand({ command: "set_emotion", emotion })
+);
+ipcMain.handle("motors:stop", () => sendMotorCommand({ command: "stop" }));
+ipcMain.handle("motors:set-servos", (_event, angle1: number, angle2: number) =>
+  sendMotorCommand({ command: "set_servos", angle1, angle2 })
+);
+
 // ── App Lifecycle ─────────────────────────────────────────────────────────
 
 app.on("before-quit", () => {
   disconnectGateway();
   stopTranscriber();
+  stopMotorController();
 });
 
 app.on("window-all-closed", () => {
@@ -814,4 +937,7 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
-app.whenReady().then(() => createWindow());
+app.whenReady().then(() => {
+  startMotorController();
+  createWindow();
+});
