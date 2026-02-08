@@ -56,5 +56,12 @@ declare global {
       sendAudioChunk: (pcmData: ArrayBuffer) => void
       onTranscript: (handler: (text: string) => void) => () => void
     }
+    motors: {
+      command: (cmd: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>
+      setEmotion: (emotion: string) => Promise<{ ok: boolean; error?: string }>
+      stop: () => Promise<{ ok: boolean; error?: string }>
+      setServos: (angle1: number, angle2: number) => Promise<{ ok: boolean; error?: string }>
+      onStatus: (handler: (status: { type: string; status: string; message: string }) => void) => () => void
+    }
   }
 }
