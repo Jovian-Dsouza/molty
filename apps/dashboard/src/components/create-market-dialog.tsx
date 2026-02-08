@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { createMarket } from "@/lib/api";
 import { PlusCircle } from "lucide-react";
+import { toast } from "sonner";
 
 type CreateMarketDialogProps = {
   onSuccess?: () => void;
@@ -52,6 +53,9 @@ export function CreateMarketDialog({ onSuccess, trigger }: CreateMarketDialogPro
         expirySeconds: 86400,
       });
       setOpen(false);
+      toast.success("Bet placed successfully!", {
+        description: question || `${asset} ${direction === "LONG" ? "Up" : "Down"} — ${(Number(amount || "1000000") / 1e6).toFixed(2)} USDC`,
+      });
       setQuestion("");
       setTargetPrice("");
       setAmount("1000000");

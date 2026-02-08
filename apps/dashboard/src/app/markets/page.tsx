@@ -15,7 +15,8 @@ import {
 } from "@/components/ui/table";
 import { CreateMarketDialog } from "@/components/create-market-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
+import { Input } from "@/components/ui/input";
 
 function formatAmount(amount: string) {
   return (Number(amount) / 1e6).toFixed(2);
@@ -26,6 +27,7 @@ export default function MarketsPage() {
   const [loading, setLoading] = useState(true);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "open" | "resolved">("all");
+  const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
@@ -58,12 +60,20 @@ export default function MarketsPage() {
     }
   }
 
-  const filtered =
+  const byStatus =
     filter === "open"
       ? markets.filter((m) => m.status === "open")
       : filter === "resolved"
         ? markets.filter((m) => m.status === "resolved")
         : markets;
+
+  const filtered = search
+    ? byStatus.filter(
+        (m) =>
+          m.question.toLowerCase().includes(search.toLowerCase()) ||
+          m.asset.toLowerCase().includes(search.toLowerCase())
+      )
+    : byStatus;
 
   // Newest first (id is m_<timestamp>)
   const sorted = [...filtered].sort((a, b) => (b.id > a.id ? 1 : -1));
@@ -91,17 +101,28 @@ export default function MarketsPage() {
         </div>
       )}
 
-      <div className="flex gap-2">
-        {(["all", "open", "resolved"] as const).map((f) => (
-          <Button
-            key={f}
-            variant={filter === f ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilter(f)}
-          >
-            {f.charAt(0).toUpperCase() + f.slice(1)}
-          </Button>
-        ))}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex gap-2">
+          {(["all", "open", "resolved"] as const).map((f) => (
+            <Button
+              key={f}
+              variant={filter === f ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFilter(f)}
+            >
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </Button>
+          ))}
+        </div>
+        <div className="relative w-full sm:w-72">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search markets..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="border-border/80 pl-9"
+          />
+        </div>
       </div>
 
       <Card className="card-highlight border-primary/20">

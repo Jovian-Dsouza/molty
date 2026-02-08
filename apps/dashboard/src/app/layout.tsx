@@ -4,6 +4,7 @@ import "./globals.css";
 import { Providers } from "@/components/providers";
 import { Sidebar } from "@/components/sidebar";
 import { TopNavbar } from "@/components/top-navbar";
+import { Toaster } from "sonner";
 
 const dmSans = DM_Sans({
   subsets: ["latin"],
@@ -32,6 +33,7 @@ export default function RootLayout({
               <main className="flex-1 bg-dashboard-pattern">{children}</main>
             </div>
           </div>
+          <Toaster theme="dark" position="top-right" richColors />
         </Providers>
       </body>
     </html>
