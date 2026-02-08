@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, chmodSync } from "node:fs";
 import { Buffer as Buffer$1 } from "node:buffer";
+import { spawn } from "node:child_process";
 import { AssemblyAI } from "assemblyai";
 import { generateKeyPairSync, createPrivateKey, sign, createHash, createPublicKey } from "node:crypto";
 const KEY_FILE = "openclaw-device-key.json";
@@ -280,36 +281,39 @@ async function humeStreamSpeak(text) {
     const decoder = new TextDecoder();
     let jsonBuf = "";
     let chunkCount = 0;
+    const processJson = (raw) => {
+      try {
+        const chunk = JSON.parse(raw);
+        if (chunk.type === "audio" && chunk.audio) {
+          chunkCount++;
+          console.log(`[Hume TTS] Chunk #${chunkCount}, base64 len=${chunk.audio.length}`);
+          broadcastHume("hume:audio-chunk", chunk.audio);
+        } else {
+          console.log(`[Hume TTS] Non-audio chunk type=${chunk.type}`);
+        }
+      } catch {
+        console.log(`[Hume TTS] Failed to parse line (len=${raw.length}): ${raw.slice(0, 200)}`);
+      }
+    };
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      jsonBuf += decoder.decode(value, { stream: true });
+      const decoded = decoder.decode(value, { stream: true });
+      jsonBuf += decoded;
       const lines = jsonBuf.split("\n");
       jsonBuf = lines.pop();
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        try {
-          const chunk = JSON.parse(trimmed);
-          if (chunk.type === "audio" && chunk.audio) {
-            chunkCount++;
-            console.log(`[Hume TTS] Chunk #${chunkCount}, base64 len=${chunk.audio.length}`);
-            broadcastHume("hume:audio-chunk", chunk.audio);
-          }
-        } catch {
-        }
+        processJson(trimmed);
       }
     }
-    if (jsonBuf.trim()) {
-      try {
-        const chunk = JSON.parse(jsonBuf.trim());
-        if (chunk.type === "audio" && chunk.audio) {
-          chunkCount++;
-          console.log(`[Hume TTS] Chunk #${chunkCount} (final), base64 len=${chunk.audio.length}`);
-          broadcastHume("hume:audio-chunk", chunk.audio);
-        }
-      } catch {
-      }
+    const remaining = jsonBuf.trim();
+    if (remaining) {
+      processJson(remaining);
+    }
+    if (chunkCount === 0) {
+      console.warn(`[Hume TTS] 0 chunks extracted. Total buffered bytes: ${jsonBuf.length}`);
     }
     console.log(`[Hume TTS] Stream complete — ${chunkCount} chunks sent`);
     broadcastHume("hume:audio-done");
@@ -650,6 +654,97 @@ function sendGateway(payload) {
     return { ok: false, error: "Failed to send message" };
   }
 }
+let motorProcess = null;
+let motorReady = false;
+function startMotorController() {
+  const scriptPath = path.join(
+    process.env.APP_ROOT,
+    "..",
+    "..",
+    "scripts",
+    "motor_controller.py"
+  );
+  console.log("[Motors] Starting motor controller:", scriptPath);
+  try {
+    motorProcess = spawn("python3", [scriptPath], {
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+  } catch (err) {
+    console.error("[Motors] Failed to spawn python3:", err);
+    return;
+  }
+  motorProcess.on("error", (err) => {
+    console.error("[Motors] Process error:", err.message);
+    motorProcess = null;
+    motorReady = false;
+  });
+  motorProcess.on("exit", (code, signal) => {
+    console.log("[Motors] Process exited", code != null ? `code=${code}` : "", signal ?? "");
+    motorProcess = null;
+    motorReady = false;
+  });
+  let stdoutBuf = "";
+  motorProcess.stdout.on("data", (chunk) => {
+    stdoutBuf += chunk.toString();
+    const lines = stdoutBuf.split("\n");
+    stdoutBuf = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const status = JSON.parse(trimmed);
+        console.log(`[Motors] Status: ${status.status} ${status.message}`);
+        if (status.status === "ready") {
+          motorReady = true;
+        }
+        for (const w of BrowserWindow.getAllWindows()) {
+          w.webContents.send("motors:status", status);
+        }
+      } catch {
+        console.log("[Motors] stdout:", trimmed);
+      }
+    }
+  });
+  motorProcess.stderr.on("data", (chunk) => {
+    console.error("[Motors] stderr:", chunk.toString().trim());
+  });
+}
+function sendMotorCommand(cmd) {
+  if (!motorProcess || !motorProcess.stdin || !motorReady) {
+    return { ok: false, error: "Motor controller not ready" };
+  }
+  try {
+    motorProcess.stdin.write(JSON.stringify(cmd) + "\n");
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to send motor command";
+    console.error("[Motors] Send error:", message);
+    return { ok: false, error: message };
+  }
+}
+function stopMotorController() {
+  return new Promise((resolve) => {
+    if (!motorProcess) {
+      resolve();
+      return;
+    }
+    try {
+      motorProcess.stdin.write(JSON.stringify({ command: "shutdown" }) + "\n");
+    } catch {
+    }
+    const timeout = setTimeout(() => {
+      if (motorProcess) {
+        console.log("[Motors] Sending SIGTERM after timeout");
+        motorProcess.kill("SIGTERM");
+      }
+      resolve();
+    }, 2e3);
+    motorProcess.on("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+}
 function createWindow() {
   const isKiosk = process.argv.includes("--kiosk") || process.env.KIOSK === "true";
   win = new BrowserWindow({
@@ -712,9 +807,20 @@ ipcMain.on("openclaw:audio-chunk", (_event, pcmData) => {
     );
   }
 });
+ipcMain.handle("motors:command", (_event, cmd) => sendMotorCommand(cmd));
+ipcMain.handle(
+  "motors:set-emotion",
+  (_event, emotion) => sendMotorCommand({ command: "set_emotion", emotion })
+);
+ipcMain.handle("motors:stop", () => sendMotorCommand({ command: "stop" }));
+ipcMain.handle(
+  "motors:set-servos",
+  (_event, angle1, angle2) => sendMotorCommand({ command: "set_servos", angle1, angle2 })
+);
 app.on("before-quit", () => {
   disconnectGateway();
   stopTranscriber();
+  stopMotorController();
 });
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
@@ -725,7 +831,10 @@ app.on("window-all-closed", () => {
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
-app.whenReady().then(() => createWindow());
+app.whenReady().then(() => {
+  startMotorController();
+  createWindow();
+});
 export {
   MAIN_DIST,
   RENDERER_DIST,

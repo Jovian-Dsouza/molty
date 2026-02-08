@@ -45,17 +45,13 @@ export function useMoltyState() {
   const [isConnected, setIsConnected] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const processingRef = useRef(false);
-  const speakingRef = useRef(false);
   const interruptedRef = useRef(false);
   /** Active AudioContext for Hume streaming playback — closing it stops all queued sources. */
   const audioCtxRef = useRef<AudioContext | null>(null);
   /** Cleanup functions for Hume IPC event listeners during a streaming speak. */
   const humeCleanupRef = useRef<(() => void) | null>(null);
   const responseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const awaitingQueryRef = useRef(false); // true after user says just "Molty" — next utterance is the query
-  const awaitingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const conversationModeRef = useRef(false); // true from Start click until Stop — skips wake word entirely
-  const [isInConversation, setIsInConversation] = useState(false);
+  const errorDisplayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [processTrigger, setProcessTrigger] = useState(0);
   /** While true, face is locked to "thinking" — prevents other code from changing it until TTS starts. */
   const thinkingLockRef = useRef(false);
@@ -124,13 +120,16 @@ export function useMoltyState() {
 
     // Reset all processing state
     processingRef.current = false;
-    speakingRef.current = false;
     thinkingLockRef.current = false;
     setIsTalking(false);
     setIsSending(false);
     if (responseTimeoutRef.current) {
       clearTimeout(responseTimeoutRef.current);
       responseTimeoutRef.current = null;
+    }
+    if (errorDisplayTimeoutRef.current) {
+      clearTimeout(errorDisplayTimeoutRef.current);
+      errorDisplayTimeoutRef.current = null;
     }
     setFace("listening");
     setSubtitle("");
@@ -153,7 +152,6 @@ export function useMoltyState() {
       utterance.volume = 1.0;
 
       utterance.onend = () => {
-        speakingRef.current = false;
         if (interruptedRef.current) {
           resolve("interrupted");
         } else {
@@ -161,7 +159,6 @@ export function useMoltyState() {
         }
       };
       utterance.onerror = (e) => {
-        speakingRef.current = false;
         if (e.error === "canceled" || interruptedRef.current) {
           resolve("interrupted");
         } else {
@@ -178,7 +175,6 @@ export function useMoltyState() {
 
   const speak = useCallback(async (text: string): Promise<"done" | "interrupted"> => {
     interruptedRef.current = false;
-    speakingRef.current = true;
 
     console.log("[Molty] Speaking (Hume TTS streaming):", text.slice(0, 80));
 
@@ -187,7 +183,6 @@ export function useMoltyState() {
       const result = await window.hume.speak(text);
 
       if (interruptedRef.current) {
-        speakingRef.current = false;
         return "interrupted";
       }
 
@@ -216,7 +211,6 @@ export function useMoltyState() {
           cleanup();
           audioCtxRef.current = null;
           try { audioCtx.close(); } catch { /* ignore */ }
-          speakingRef.current = false;
           resolve(outcome);
         };
 
@@ -269,15 +263,15 @@ export function useMoltyState() {
         const offDone = window.hume.onAudioDone(() => {
           streamDone = true;
           if (chunksScheduled === 0) {
-            // No audio chunks received — fall back to browser TTS
+            // No audio chunks received — fall back to browser TTS and wait for it
             console.warn("[Molty] Hume stream ended with 0 chunks — falling back to browser TTS");
-            finish("done"); // finish this attempt first
-            speakingRef.current = true; // re-arm for fallback
+            cleanup();
+            audioCtxRef.current = null;
+            try { audioCtx.close(); } catch { /* ignore */ }
             speakBrowser(text).then((r) => {
-              // The promise is already resolved above, but this handles the fallback playback.
-              // Because finish() was called, we need to signal the caller differently.
-              // Since we resolved "done" already, the outer flow continues normally.
-              void r;
+              if (resolved) return;
+              resolved = true;
+              resolve(r);
             });
             return;
           }
@@ -286,9 +280,14 @@ export function useMoltyState() {
 
         const offError = window.hume.onAudioError((error: string) => {
           console.warn("[Molty] Hume TTS stream error:", error, "— falling back to browser TTS");
-          // Resolve this as done and let caller proceed; fallback plays in parallel
-          finish("done");
-          speakBrowser(text).then(() => {});
+          cleanup();
+          audioCtxRef.current = null;
+          try { audioCtx.close(); } catch { /* ignore */ }
+          speakBrowser(text).then((r) => {
+            if (resolved) return;
+            resolved = true;
+            resolve(r);
+          });
         });
 
         const cleanup = () => {
@@ -317,6 +316,12 @@ export function useMoltyState() {
       interruptedRef.current = false;
 
       console.log("[Molty] Processing transcript:", text);
+
+      // Cancel any stale error-display timer that would call resume() mid-processing
+      if (errorDisplayTimeoutRef.current) {
+        clearTimeout(errorDisplayTimeoutRef.current);
+        errorDisplayTimeoutRef.current = null;
+      }
 
       // Pause mic while waiting for response (avoid sending silence to transcriber)
       pause();
@@ -353,80 +358,44 @@ export function useMoltyState() {
         },
       };
       console.log("[Molty] Sending chat.send to OpenClaw:", JSON.stringify(chatReq).slice(0, 200));
-      const result = await window.openclaw.send(chatReq);
-      console.log("[Molty] Send result:", JSON.stringify(result));
+      try {
+        const result = await window.openclaw.send(chatReq);
+        console.log("[Molty] Send result:", JSON.stringify(result));
+      } catch (err) {
+        console.error("[Molty] chat.send failed:", err);
+        // Recover immediately instead of waiting for the 30s timeout
+        processingRef.current = false;
+        thinkingLockRef.current = false;
+        if (responseTimeoutRef.current) {
+          clearTimeout(responseTimeoutRef.current);
+          responseTimeoutRef.current = null;
+        }
+        setFace("error");
+        setSubtitle("Failed to send message");
+        errorDisplayTimeoutRef.current = setTimeout(() => {
+          errorDisplayTimeoutRef.current = null;
+          setFace("listening");
+          setSubtitle("");
+          resume();
+          setProcessTrigger((t) => t + 1);
+        }, 3000);
+      }
       setIsSending(false);
     },
     [pause, resume]
   );
 
-  // ── Handle new transcripts ──────────────────────────────────────────
+  // ── Handle new transcripts (always-on conversation mode) ─────────────
 
   useEffect(() => {
     if (!transcript) return;
     if (processingRef.current) {
       setTranscript(null);
-      return; // ignore while busy; user can press Stop
+      return; // ignore while busy
     }
 
-    // ── Conversation mode (Start→Stop loop): every transcript is a query ──
-    if (conversationModeRef.current) {
-      setTranscript(null);
-      processTranscript(transcript);
-      return;
-    }
-
-    // ── Awaiting follow-up after user said just "Molty" ──
-    if (awaitingQueryRef.current) {
-      awaitingQueryRef.current = false;
-      if (awaitingTimeoutRef.current) {
-        clearTimeout(awaitingTimeoutRef.current);
-        awaitingTimeoutRef.current = null;
-      }
-      setSubtitle("");
-      processTranscript(transcript);
-      setTranscript(null);
-      return;
-    }
-
-    // ── Wake-word gated (passive listening) ──
-    const lower = transcript.toLowerCase();
-    const wakeWords = ["molty", "malty", "molti", "malti", "multi", "moulty", "moulty", "melty"];
-    let matchIdx = -1;
-    let matchLen = 0;
-    for (const w of wakeWords) {
-      const i = lower.indexOf(w);
-      if (i !== -1) {
-        matchIdx = i;
-        matchLen = w.length;
-        break;
-      }
-    }
-    if (matchIdx === -1) {
-      // No wake word — ignore
-      setTranscript(null);
-      return;
-    }
-
-    // Extract everything after the wake word
-    const query = transcript.slice(matchIdx + matchLen).trim();
     setTranscript(null);
-
-    if (!query) {
-      // User just said "Molty" — acknowledge and wait for the next utterance
-      setFace("listening");
-      setSubtitle("I'm listening...");
-      awaitingQueryRef.current = true;
-      awaitingTimeoutRef.current = setTimeout(() => {
-        awaitingQueryRef.current = false;
-        awaitingTimeoutRef.current = null;
-        setSubtitle("");
-        setFace("listening");
-      }, 10_000);
-      return;
-    }
-
-    processTranscript(query);
+    processTranscript(transcript);
   }, [transcript, processTrigger, processTranscript, setTranscript]);
 
   // ── Listen for OpenClaw chat events (streamed response) ───────────────
@@ -535,8 +504,17 @@ export function useMoltyState() {
           setSubtitle(finalText);
           setIsTalking(true);
 
-          // Keep mic paused while speaking to avoid picking up TTS audio.
-          // The user can still interrupt via the Stop button.
+          // Clear response timeout now — we got the response, don't let
+          // the timer fire mid-playback and call resume().
+          if (responseTimeoutRef.current) {
+            clearTimeout(responseTimeoutRef.current);
+            responseTimeoutRef.current = null;
+          }
+
+          // Mute mic while speaking to avoid picking up TTS audio (echo loop).
+          // pause() may already be active from processTranscript, but the 30s
+          // timeout could have called resume() in the meantime, so re-pause.
+          pause();
 
           const result = await speak(finalText);
 
@@ -545,32 +523,21 @@ export function useMoltyState() {
             return;
           }
 
-          // Normal completion — resume mic for the next turn
+          // Normal completion — brief delay before resuming mic so residual
+          // speaker audio doesn't get picked up as a new transcript (echo).
           setIsTalking(false);
-          processingRef.current = false;
           if (responseTimeoutRef.current) {
             clearTimeout(responseTimeoutRef.current);
             responseTimeoutRef.current = null;
           }
           setFace("listening");
+          await new Promise((r) => setTimeout(r, 300));
+          // Clear any stale transcript that arrived during TTS
+          setTranscript(null);
+          processingRef.current = false;
           resume();
 
-          if (conversationModeRef.current) {
-            // Conversation mode: stay active, no wake word needed, no timeout
-            setSubtitle("I'm listening...");
-          } else {
-            // One-shot (wake-word initiated): give a window for the user to reply
-            setSubtitle("I'm listening...");
-            awaitingQueryRef.current = true;
-            if (awaitingTimeoutRef.current) clearTimeout(awaitingTimeoutRef.current);
-            awaitingTimeoutRef.current = setTimeout(() => {
-              awaitingQueryRef.current = false;
-              awaitingTimeoutRef.current = null;
-              setSubtitle("");
-              setFace("listening");
-            }, 15_000);
-          }
-
+          setSubtitle("I'm listening...");
           setProcessTrigger((t) => t + 1);
           return;
         }
@@ -605,7 +572,8 @@ export function useMoltyState() {
           }
           setFace("error");
           setSubtitle(errMsg);
-          setTimeout(() => {
+          errorDisplayTimeoutRef.current = setTimeout(() => {
+            errorDisplayTimeoutRef.current = null;
             setFace("listening");
             setSubtitle("");
             resume();
@@ -616,7 +584,7 @@ export function useMoltyState() {
       }
     });
     return off;
-  }, [speak, resume, interrupt]);
+  }, [speak, pause, resume, interrupt, setTranscript]);
 
   // Listen for connection status changes
   useEffect(() => {
@@ -646,59 +614,17 @@ export function useMoltyState() {
     init();
   }, []);
 
-  // Once connected, mark as ready for voice and auto-enter conversation mode
+  // Once connected, mark as ready for voice
   useEffect(() => {
     if (isConnected && !isReady) {
-      console.log("[Molty] OpenClaw connected — starting voice & conversation mode");
+      console.log("[Molty] OpenClaw connected — starting voice");
       setIsReady(true);
-      // Auto-enter conversation mode (no touch needed — Pi touchscreen doesn't work)
-      conversationModeRef.current = true;
-      setIsInConversation(true);
       setFace("listening");
       setSubtitle("I'm listening...");
     }
   }, [isConnected, isReady]);
 
-  // ── Stop button handler ────────────────────────────────────────────────
-
-  const stopAndResume = useCallback(() => {
-    console.log("[Molty] Stop button pressed — ending conversation mode");
-    conversationModeRef.current = false;
-    setIsInConversation(false);
-    interrupt();
-    resume();
-
-    // Tell the agent the user asked to stop
-    const stopReq = {
-      type: "req",
-      id: `chat-stop-${Date.now()}`,
-      method: "chat.send",
-      params: {
-        sessionKey: "main",
-        message: "/stop",
-        idempotencyKey: `kiosk-stop-${Date.now()}`,
-      },
-    };
-    window.openclaw.send(stopReq).catch(() => {});
-  }, [interrupt, resume]);
-
-  // ── Manual start handler — enters persistent conversation mode ───────
-
-  const manualStart = useCallback(() => {
-    if (processingRef.current || conversationModeRef.current) return;
-    console.log("[Molty] Starting conversation mode");
-    conversationModeRef.current = true;
-    setIsInConversation(true);
-    setFace("listening");
-    setSubtitle("I'm listening...");
-    resume(); // make sure mic is active
-  }, [resume]);
-
-  // Derive "busy" — show Stop button during entire conversation mode or while processing/talking
-  const isBusy = isInConversation || face === "thinking" || isTalking || (!!subtitle && face !== "idle" && face !== "error" && face !== "listening");
-
   return {
-    face, isTalking, isSending, isInConversation, subtitle, isReady, isListening, isConnected,
-    isBusy, stopAndResume, manualStart,
+    face, isTalking, isSending, subtitle, isReady, isListening, isConnected,
   };
 }

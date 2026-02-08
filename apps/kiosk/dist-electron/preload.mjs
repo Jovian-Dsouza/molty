@@ -39,3 +39,10 @@ electron.contextBridge.exposeInMainWorld("openclaw", {
   sendAudioChunk: (pcmData) => electron.ipcRenderer.send("openclaw:audio-chunk", pcmData),
   onTranscript: (handler) => subscribe("openclaw:transcript", handler)
 });
+electron.contextBridge.exposeInMainWorld("motors", {
+  command: (cmd) => electron.ipcRenderer.invoke("motors:command", cmd),
+  setEmotion: (emotion) => electron.ipcRenderer.invoke("motors:set-emotion", emotion),
+  stop: () => electron.ipcRenderer.invoke("motors:stop"),
+  setServos: (angle1, angle2) => electron.ipcRenderer.invoke("motors:set-servos", angle1, angle2),
+  onStatus: (handler) => subscribe("motors:status", handler)
+});
