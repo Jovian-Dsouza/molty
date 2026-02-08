@@ -18,52 +18,30 @@ The robot's brain runs on **OpenClaw** (deployed on AWS EC2), giving it autonomo
 
 > _"The only DeFi agent that literally dies for your losses."_
 
-### Demo Flow (Judges Pitch)
+### Hackathon Demo Flows (Submission)
 
-```
-[Molty is sitting on desk, idle face, showing wallet balance on screen]
+We demo **two flows** for judges:
 
-You:     "Hey Molty, what's ETH trading at?"
-Molty:   [Eyes light up] "ETH is at $3,247, up 2.1% today!"
-         [Screen shows mini price chart]
+**Flow A — Swap and profit check**
 
-You:     "I think it's going higher. Bet 50 USDC that ETH
-          hits $3,300 in the next hour."
-Molty:   [Thinking face] "Placing bet... 50 USDC on ETH above
-          $3,300 by 4:30 PM. Odds: 2.1x. Potential payout: $105."
-         [Screen: bet confirmation + countdown timer]
+1. User: "I want to buy some ETH."
+2. Moltbot swaps the user's USDC to ETH via **molty-swap** (LI.FI).
+3. After ~2 minutes, user: "Did I make a profit?"
+4. Bot checks (e.g. **molty-events** for current ETH price, **molty-portfolio** for position) and says yes, then **celebrates** (face `celebrating`, motors).
 
-You:     "Actually, use my DAI on Arbitrum for this."
-Molty:   [Processing] "Routing via LI.FI... swapping DAI on
-          Arbitrum to USDC on Polygon... Done! Bet funded."
-         [Screen shows cross-chain route animation]
+**Flow B — Prediction bet (Yellow)**
 
-[TIME PASSES — Molty shows live ETH price on screen,
- face shifts between nervous/excited as price moves]
+1. User: "I want to bet that the best AI this month is Codex."
+2. OpenClaw checks if the market is available (Yellow) and places the bet (backend Yellow integration: app session, submit prediction state).
+3. User: "What is the status of the bet?"
+4. Bot checks the market on Yellow; user has **lost**.
+5. Bot becomes very sad and **falls off the table** (face `dying`, motor animation `tableFall`).
 
---- ETH HITS $3,300 ---
-Molty:   [ARMS UP, DANCING, PARTY FACE 🎉]
-         "WE WON! +$105 USDC settled to your wallet! 🦞"
-         [Screen shows confetti + P&L]
+### Why These Demos Work for Judges
 
---- OR: ETH STAYS BELOW ---
-Molty:   [Sad face, arms droop, slowly drives forward...]
-         "I... I believed in ETH..."
-         [Falls off table] 💀
-```
-
-### Why This Demo Works for Judges
-
-- **Always live** — crypto trades 24/7, judges can verify ETH price in real-time
-- **Judges are crypto people** — they care about ETH, not cricket scores
-- **Shows cross-chain** — "use my DAI on Arbitrum" naturally demos LI.FI
-- **Short timeframe** — "next hour" shows the full lifecycle in a demo video
-- **Universally relatable** — everyone in DeFi has opinions on price direction
-
-> **Note:** Molty is general-purpose — sports betting (cricket, football, etc.),
-> election outcomes, and any prediction market event all work. Crypto price
-> predictions are chosen for the demo because they're always available and
-> resonate best with ETHGlobal judges.
+- **Flow A** — Shows LI.FI (swap USDC→ETH) and voice-driven profit check; always live (crypto 24/7).
+- **Flow B** — Shows Yellow state channels for prediction markets (check market, place bet, resolve); memorable physical reaction (table fall) on loss.
+- **Two integrations** — One flow highlights LI.FI; the other highlights Yellow. Both resonate with ETHGlobal judges.
 
 ---
 
@@ -158,6 +136,8 @@ ETHGlobal allows a maximum of 3 partner selections. Finalists is automatic.
 └─────────────────────────────────────────────────────────┘
 ```
 
+**Demo flows:** Flow A uses **LI.FI** (molty-swap) for USDC→ETH. Flow B uses **Yellow** for prediction markets (check market, place bet, status, resolve); robot reacts on win/loss.
+
 ---
 
 ## 4. Component Breakdown
@@ -204,102 +184,58 @@ Messages FROM Robot to EC2:
 - Custom skills directory for Molty-specific capabilities
 - WebSocket server for robot communication
 
-**Custom OpenClaw Skills:**
+**Custom OpenClaw Skills** (see `molty/skills/` in repo):
 
 ```
-~/.openclaw/skills/
-├── molty-betting/          # Core betting skill
-│   ├── skill.md               # Skill definition
-│   └── index.ts               # Yellow SDK integration
-├── molty-events/           # Event data fetching
-│   ├── skill.md
-│   └── index.ts               # Sports/events API
-├── molty-robot/            # Robot hardware control
-│   ├── skill.md
-│   └── index.ts               # WebSocket → robot commands
-├── molty-portfolio/        # Position tracking
-│   ├── skill.md
-│   └── index.ts               # Monitor bets, trigger reactions
-├── molty-crosschain/       # LI.FI integration
-│   ├── skill.md
-│   └── index.ts               # Cross-chain funding
-└── molty-wallet/              # Arc/Circle wallet
-    ├── skill.md
-    └── index.ts               # Circle Wallets + USDC settlement
+molty/skills/
+├── molty-soul/             # Personality and face directives (always on)
+│   └── SKILL.md
+├── molty-events/           # Live crypto prices (Stork oracle)
+│   ├── SKILL.md
+│   └── index.ts
+├── molty-swap/             # On-chain token swaps via LI.FI
+│   ├── SKILL.md
+│   └── index.ts
+└── molty-portfolio/        # Wallet token balances across chains
+    ├── SKILL.md
+    └── index.ts
 ```
+
+**Prediction / betting:** Implemented via Yellow integration in the backend (`apps/backend/lib/yellow.js`). OpenClaw (or the kiosk) calls the backend to check market availability, place a bet, and check status. State-channel lifecycle is implemented in `research/yellow-swap/` (sandbox and production Base USDC); see also `HACK_DEMO.md` for LI.FI → Yellow on Base.
 
 ### 4.3 Yellow SDK Integration (Primary Prize Target)
 
-**Purpose:** Gasless, instant prediction market bets via state channels.
+**Purpose:** Gasless, instant prediction market bets via state channels. Used in **Flow B** (prediction bet), not for the swap itself — LI.FI handles swaps in Flow A.
 
-**Flow:**
+**Flow (prediction bet — e.g. "best AI this month is Codex"):**
 
 ```
-1. USER: "Bet 100 USDC on RCB winning"
-2. OpenClaw parses intent → calls molty-betting skill
-3. Skill opens Yellow state channel session (one-time on-chain tx)
-4. All bets happen OFF-CHAIN through Yellow Nitrolite protocol
-   - Instant confirmation
-   - Zero gas fees
-   - Session-based allowance (user sets max spend)
-5. When match ends (or user exits):
-   - Final balances settled ON-CHAIN via smart contract
-   - Winner receives USDC to wallet
-6. Robot reacts to outcome
+1. USER: "I want to bet that the best AI this month is Codex"
+2. OpenClaw/backend checks if market is available (Yellow)
+3. Backend opens Yellow state channel / app session (see research/yellow-swap)
+4. Bet placed OFF-CHAIN via Nitrolite (instant, gasless)
+5. User asks "What is the status of the bet?" → backend checks market on Yellow
+6. On resolve (e.g. user lost): settle on-chain; robot reacts (face=dying, tableFall)
 ```
 
 **Key Yellow Concepts Used:**
 
-- **State Channels:** Lock funds once, transact unlimited times off-chain
-- **Session Allowance:** User defines max bet amount per session
-- **On-chain Settlement:** Only 2 transactions (open + close channel)
-- **Nitrolite Protocol:** Manages off-chain state between parties
+- **State Channels:** Lock funds once, transact off-chain (auth → create channel → app session).
+- **App session:** Submit prediction state, close with final allocations; settlement on Base.
+- **Nitrolite Protocol:** EIP-712 auth, ClearNet WebSocket; see `research/yellow-swap/yellow-swap.js` (sandbox) and `yellow-production.js` (Base mainnet USDC + custody). Also `apps/backend/lib/yellow.js` for create/resolve prediction flow.
 
-**Integration Points:**
+**References:** `research/yellow-swap/`, `HACK_DEMO.md` (LI.FI on Base then Yellow on Base).
 
-```javascript
-// Pseudo-code for Yellow SDK usage
-import { YellowSDK, NitroliteClient } from "@aspect-build/yellow-sdk";
+### 4.4 LI.FI Integration (Swap Flow — Flow A)
 
-// 1. Initialize session
-const session = await YellowSDK.createSession({
-  wallet: userWallet,
-  allowance: "500", // Max 500 USDC per session
-  token: "USDC",
-  network: "polygon", // or any EVM chain
-});
-
-// 2. Place bet (off-chain, instant)
-const bet = await session.createTransaction({
-  type: "prediction",
-  event: "RCB_vs_MI_2026_02_07",
-  outcome: "RCB_WIN",
-  amount: "100", // 100 USDC
-  odds: 1.8,
-});
-
-// 3. Monitor position (off-chain state)
-const position = await session.getPosition(bet.id);
-// { status: 'active', potential_payout: 180, current_odds: 1.75 }
-
-// 4. Settlement (on-chain, when match ends)
-const result = await session.settle();
-// Final USDC balance returned to user's wallet
-```
-
-### 4.4 LI.FI Integration (Cross-Chain Funding)
-
-**Purpose:** Allow users to fund bets from ANY chain/token. User has ETH on Arbitrum but wants to bet USDC on Polygon? LI.FI handles it.
+**Purpose:** On-chain token swaps. Used when the user says e.g. "I want to buy some ETH" — **molty-swap** calls LI.FI to swap USDC→ETH (or other pairs) on Base, Arbitrum, or Polygon.
 
 ```
-User: "Bet 100 USDC on RCB — use my ETH on Arbitrum"
-
-Flow:
-1. LI.FI SDK fetches best route: ETH (Arbitrum) → USDC (Polygon)
-2. Swap + bridge in one transaction
-3. USDC arrives on Polygon → deposited into Yellow state channel
-4. Bet placed instantly
+User: "I want to buy some ETH"
+Flow: OpenClaw → molty-swap skill → LI.FI quote + execute → swap USDC to ETH on-chain
 ```
+
+Cross-chain funding (e.g. "use my DAI on Arbitrum") is supported the same way: LI.FI routes swap+bridge as needed. See `HACK_DEMO.md` for Base-focused demo (LI.FI to get USDC on Base, then Yellow for prediction).
 
 ### 4.5 Arc (Circle) Integration
 
@@ -422,77 +358,68 @@ const ANIMATIONS = {
 
 ---
 
-## 6. Data Flow — Complete Bet Lifecycle
+## 6. Data Flow — Hackathon Demo Flows
+
+### Flow A — Swap and profit check
 
 ```
-Step 1: VOICE INPUT
-━━━━━━━━━━━━━━━━━━
-User speaks → Robot mic captures audio → WebSocket → EC2
-EC2 runs Whisper STT → text: "Bet 100 USDC that RCB wins tonight"
+1. User: "I want to buy some ETH"
+   → Voice → STT → OpenClaw intent (swap, buy ETH)
 
-Step 2: INTENT PARSING (OpenClaw + LLM)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OpenClaw agent processes text → extracts:
-  {
-    action: "place_bet",
-    amount: 100,
-    currency: "USDC",
-    event: "cricket",
-    team: "RCB",
-    outcome: "win",
-    opponent: "Mumbai Indians",
-    date: "tonight"
-  }
+2. OpenClaw invokes molty-swap (LI.FI): swap USDC → ETH
+   → On-chain swap executes; robot face: excited
 
-Step 3: EVENT VALIDATION
-━━━━━━━━━━━━━━━━━━━━━━━
-molty-events skill queries sports API:
-  → Confirms: RCB vs MI, Feb 7 2026, 7:30 PM IST
-  → Fetches current odds: RCB win @ 1.8x
-  → Returns event_id for prediction market
+3. (After ~2 min) User: "Did I make a profit?"
+   → OpenClaw uses molty-events (current ETH price) + molty-portfolio (holdings)
+   → Compares entry vs current; determines profit
 
-Step 4: CROSS-CHAIN FUNDING (if needed, via LI.FI)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-If user's USDC is on wrong chain:
-  LI.FI SDK routes assets to correct chain
-  → Swap/bridge in single tx
+4. Bot responds "Yes!" → face: celebrating, motors: dance
+```
 
-Step 5: BET PLACEMENT (Yellow SDK)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-molty-betting skill:
-  → Opens Yellow state channel (if not already open)
-  → Places off-chain bet: 100 USDC on RCB @ 1.8x
-  → Instant confirmation, zero gas
+### Flow B — Prediction bet (Yellow)
 
-Step 6: ROBOT REACTION — BET PLACED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EC2 → Robot:
-  face: "excited"
-  screen: { event: "RCB vs MI", bet: "100 USDC", odds: "1.8x", payout: "180 USDC" }
-  audio: TTS("Bet placed! 100 USDC on RCB at 1.8x odds. Let's go!")
-  motors: arms_up briefly
+```
+1. User: "I want to bet that the best AI this month is Codex"
+   → OpenClaw/backend checks if market exists on Yellow
 
-Step 7: LIVE POSITION TRACKING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-molty-portfolio skill polls every 30s:
-  → Fetches live odds changes
-  → Calculates current position value
-  → Sends updates to robot screen
-  Robot face toggles between "watching" and "nervousWiggle"
+2. Backend places bet via Yellow: app session, submit prediction state
+   → Off-chain, gasless; robot face: excited
 
-Step 8a: WIN → CELEBRATION
-━━━━━━━━━━━━━━━━━━━━━━━━━
-Event resolves: RCB wins
-  → Yellow state channel settles on-chain
-  → 180 USDC sent to user wallet
-  → Robot: face="celebrating", animation="dance", audio="WE WON!"
+3. User: "What is the status of the bet?"
+   → Backend checks market resolution on Yellow
 
-Step 8b: LOSS → DRAMATIC DEATH
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Event resolves: RCB loses
-  → Yellow state channel settles (0 USDC back)
-  → Robot: face="dying", audio="Rug... pulled..."
-  → animation="tableFall" → Robot drives off table 💀
+4. Outcome: user lost
+   → Backend resolves/settles; robot face: dying, animation: tableFall (falls off table)
+```
+
+### Sequence overview
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Molty
+  participant OpenClaw
+  participant LI_FI as LI.FI
+  participant Yellow
+
+  Note over User,Yellow: Flow A - Swap and profit
+  User->>Molty: I want to buy some ETH
+  Molty->>OpenClaw: intent
+  OpenClaw->>LI_FI: swap USDC to ETH
+  LI_FI-->>Molty: done
+  Molty->>User: Swapped. [face:excited]
+  User->>Molty: Did I make a profit?
+  OpenClaw->>OpenClaw: molty-events price + molty-portfolio
+  Molty->>User: Yes! [face:celebrating]
+
+  Note over User,Yellow: Flow B - Prediction bet
+  User->>Molty: Bet best AI is Codex
+  OpenClaw->>Yellow: market available? place bet
+  Yellow-->>Molty: bet placed
+  User->>Molty: Status of the bet?
+  OpenClaw->>Yellow: resolve or status
+  Yellow-->>Molty: lost
+  Molty->>User: sad [face:dying] then table fall
 ```
 
 ---
@@ -523,60 +450,32 @@ Event resolves: RCB loses
 ```
 molty/
 ├── README.md                    # Project overview + demo video link
-├── docs/
-│   ├── architecture.md          # This document
-│   └── prize-submission.md      # Prize-specific submission notes
+├── ARCHITECTURE.md              # This document
+├── CONTEXT.md                   # Project context for AI/contributors
+├── HACK_DEMO.md                 # LI.FI on Base + Yellow on Base demo
 │
-├── robot/                       # Hardware firmware
-│   ├── src/
-│   │   ├── main.cpp             # Entry point (ESP32) or main.py (RPi)
-│   │   ├── websocket_client.h   # WebSocket connection to EC2
-│   │   ├── motor_controller.h   # Servo + DC motor control
-│   │   ├── screen_renderer.h    # Face + data rendering
-│   │   ├── audio_capture.h      # Mic → audio buffer
-│   │   └── animations.h         # Predefined animation sequences
-│   ├── platformio.ini           # Build config (ESP32)
-│   └── wiring-diagram.png       # Hardware connections
+├── molty/                       # OpenClaw workspace and skills
+│   ├── skills/                  # Custom OpenClaw skills
+│   │   ├── molty-soul/          # Personality + face directives
+│   │   ├── molty-events/        # Stork price feeds
+│   │   ├── molty-swap/          # LI.FI token swaps
+│   │   └── molty-portfolio/     # Wallet balances
+│   └── workspace/               # OpenClaw config (SOUL.md, AGENTS.md)
 │
-├── server/                      # EC2 backend
-│   ├── index.ts                 # WebSocket server + router
-│   ├── speech/
-│   │   ├── stt.ts               # Whisper integration
-│   │   └── tts.ts               # TTS integration
-│   └── ws/
-│       └── robot-bridge.ts      # WebSocket handler for robot
+├── apps/
+│   ├── kiosk/                   # Electron + React face UI, voice, OpenClaw client
+│   │   ├── src/                 # MoltyFace, useMoltyState, useOpenClaw, etc.
+│   │   └── electron/            # Main process, preload
+│   ├── backend/                 # WebSocket + Yellow prediction (lib/yellow.js)
+│   └── dashboard/               # Next.js dashboard (markets, transactions)
 │
-├── skills/                      # OpenClaw custom skills
-│   ├── molty-betting/
-│   │   ├── skill.md
-│   │   └── index.ts             # Yellow SDK + Nitrolite
-│   ├── molty-events/
-│   │   ├── skill.md
-│   │   └── index.ts             # Sports/events data
-│   ├── molty-robot/
-│   │   ├── skill.md
-│   │   └── index.ts             # Robot control commands
-│   ├── molty-portfolio/
-│   │   ├── skill.md
-│   │   └── index.ts             # Position monitoring
-│   ├── molty-crosschain/
-│   │   ├── skill.md
-│   │   └── index.ts             # LI.FI integration
-│   └── molty-wallet/
-│       ├── skill.md
-│       └── index.ts             # Arc/Circle wallet + USDC
+├── research/
+│   ├── yellow-swap/             # Yellow state-channel lifecycle (sandbox + production)
+│   ├── lifi-swap/               # LI.FI swap scripts
+│   └── e2e-crosschain-prediction/
 │
-├── face-ui/                     # Robot face web app
-│   ├── index.html               # Single-file face renderer
-│   ├── faces/                   # Face state SVGs/animations
-│   └── data-overlay/            # Bet data display components
-│
-├── contracts/                   # Smart contracts (if custom)
-│   └── MoltySettlement.sol   # Settlement logic
-│
-└── demo/
-    ├── demo-video.mp4           # 2-3 min demo for submission
-    └── screenshots/             # UI screenshots
+├── scripts/                     # Audio, motors (record_audio, motor_controller)
+└── demo/                        # Demo video + screenshots (if present)
 ```
 
 ---
@@ -628,7 +527,7 @@ Given submissions are due ~Feb 10-11:
 
 ### For LI.FI AI Smart App ($2K):
 
-**Emphasize:** AI-powered agent using LI.FI as cross-chain execution layer. Molty monitors state, decides routing, acts using LI.FI. The "use my DAI on Arbitrum" moment in the demo is the money shot. Provide CLI/script demo with logs + video.
+**Emphasize:** AI-powered agent using LI.FI for on-chain swaps. In Flow A, user says "I want to buy some ETH" and Molty executes USDC→ETH via LI.FI (molty-swap). Cross-chain (e.g. "use my DAI on Arbitrum") is supported the same way. Provide demo with logs + video.
 
 ### For Finalists (Top 10):
 

@@ -18,18 +18,12 @@ The name "Molty" is a tribute to OpenClaw's history — the project was original
 
 ## What Does Molty Do?
 
-Molty is a voice-controlled DeFi trading assistant. The core use case:
+Molty is a voice-controlled DeFi assistant. For the hackathon we demo **two flows**:
 
-1. **User speaks to Molty** — e.g., "Hey Molty, what's ETH trading at?"
-2. **Molty fetches live data** — queries market data APIs, returns current price
-3. **User places a bet** — "Bet 50 USDC that ETH hits $3,300 in the next hour"
-4. **Molty executes the bet onchain** — uses Yellow Network state channels for gasless, instant off-chain betting with on-chain settlement
-5. **Molty tracks the position live** — shows real-time P&L, odds changes on its screen
-6. **Molty physically reacts to the outcome:**
-   - **WIN:** Arms go up, dances (wheels move), screen shows party face 🎉, announces winnings
-   - **LOSS:** Sad face, arms drop, robot drives forward off the edge of the table and falls off (dramatic "death") 💀
+1. **Swap + profit check:** User says "I want to buy some ETH" → Moltbot swaps USDC to ETH (molty-swap / LI.FI). Later: "Did I make a profit?" → bot checks prices and portfolio, says yes and **celebrates** (face + motors).
+2. **Prediction bet (Yellow):** User says they want to bet that e.g. "the best AI this month is Codex" → OpenClaw checks if the market is available and places the bet via Yellow. User asks "What is the status of the bet?" → bot checks Yellow; user loses → bot becomes very sad and **falls off the table** (face `dying`, animation `tableFall`).
 
-The dramatic physical reactions are the signature feature — it's what makes Molty memorable and demo-worthy for hackathon judges.
+Molty also fetches live prices (molty-events), checks wallet balances (molty-portfolio), and follows personality/face rules (molty-soul). The dramatic physical reactions — celebrating on profit, falling off the table on loss — are the signature demo for judges.
 
 ---
 
@@ -94,14 +88,14 @@ The robot is a "thin client" — it captures audio, displays visuals, and moves 
 
 OpenClaw is an open-source AI agent framework (https://openclaw.ai) that runs on your own machine. It connects to LLMs (Claude, GPT, DeepSeek), has persistent memory, can execute code, browse the web, and run autonomous tasks via "skills."
 
-For Molty, we deploy OpenClaw on an EC2 instance with custom skills:
+For Molty, we deploy OpenClaw with custom skills in `molty/skills/`:
 
-- **molty-betting** — Yellow SDK integration for placing/settling prediction market bets
-- **molty-events** — Fetches live market data (crypto prices, sports events)
-- **molty-robot** — Sends commands to the physical robot (face states, motor animations, screen data)
-- **molty-portfolio** — Monitors active positions, triggers reactions on outcome
-- **molty-crosschain** — LI.FI SDK for routing assets across chains
-- **molty-wallet** — Arc/Circle Wallets for USDC settlement
+- **molty-soul** — Personality and face directives (always on); defines when to use e.g. `[face:celebrating]` or `[face:dying]`
+- **molty-events** — Live crypto prices via Stork oracle (e.g. ETH, BTC)
+- **molty-swap** — On-chain token swaps via LI.FI (USDC↔ETH, etc.) — used in the swap flow
+- **molty-portfolio** — Wallet token balances across Base, Arbitrum, Polygon
+
+Prediction/betting is implemented via the **backend** Yellow integration (`apps/backend/lib/yellow.js`): check market availability, place bet, check status. OpenClaw or the kiosk calls the backend; see `research/yellow-swap/` for the state-channel lifecycle.
 
 The server also handles:
 
@@ -111,68 +105,40 @@ The server also handles:
 
 ### Layer 3: Blockchain
 
-**Yellow Network (Primary):**
-Yellow uses state channels (Nitrolite protocol) for off-chain transactions. Think of it like a bar tab — you "open a tab" (lock USDC in a state channel), make unlimited transactions off-chain (instant, gasless), and "close the tab" (settle final balance on-chain). For Molty:
+**LI.FI (Swap flow):** Used for on-chain token swaps when the user says e.g. "I want to buy some ETH." Molty-swap calls LI.FI to execute USDC→ETH (or other pairs) on Base, Arbitrum, or Polygon. Cross-chain routing (e.g. "use my DAI on Arbitrum") is supported the same way.
 
-- Open state channel = 1 on-chain tx
-- Place bets = unlimited off-chain txns (instant, no gas)
-- Settle outcomes = 1 on-chain tx
-- Total: 2 on-chain txns regardless of how many bets placed
+**Yellow Network (Prediction / bet flow):** Yellow uses state channels (Nitrolite protocol) for off-chain prediction markets. Open state channel / app session, place bet off-chain (instant, gasless), then settle on-chain. For Molty's bet flow: backend checks market availability, places bet, and checks resolution; on loss, robot triggers `dying` + table fall. See `research/yellow-swap/` and `HACK_DEMO.md` (Base mainnet).
 
-**Arc / Circle (Settlement):**
-Arc is Circle's L1 blockchain, EVM-compatible. USDC is the native settlement currency. Circle Wallets provide programmable wallets for Molty's autonomous transactions.
-
-**LI.FI (Cross-chain routing):**
-LI.FI aggregates DEXs and bridges. If a user's funds are on the wrong chain (e.g., DAI on Arbitrum but needs USDC on Polygon), LI.FI routes the swap+bridge in a single transaction.
+**Arc / Circle (Settlement):** USDC settlement; Arc is Circle's L1. Optional for agentic commerce narrative.
 
 ---
 
-## Demo Flow (for hackathon video)
+## Demo Flows (for hackathon video)
 
-The demo uses **crypto price predictions** because:
+We demo **two flows**; see also `ARCHITECTURE.md` Section 1 and Section 6.
 
-- Crypto trades 24/7 (always live during judging)
-- ETHGlobal judges are crypto people (they care about ETH price)
-- Short timeframes work ("next hour" shows full lifecycle)
+**Flow A — Swap and profit check**
 
-```
-[Molty on desk, idle face, screen shows wallet balance]
+1. User: "I want to buy some ETH."
+2. Moltbot swaps USDC to ETH (molty-swap / LI.FI).
+3. After ~2 minutes: "Did I make a profit?"
+4. Bot says yes and celebrates (face `celebrating`, dance).
 
-User: "Hey Molty, what's ETH trading at?"
-Molty: [Eyes light up] "ETH is at $3,247, up 2.1% today!"
-       [Screen shows mini price chart]
+**Flow B — Prediction bet (Yellow)**
 
-User: "Bet 50 USDC that ETH hits $3,300 in the next hour."
-Molty: [Thinking face] "Placing bet... 50 USDC on ETH above $3,300
-       by 4:30 PM. Odds: 2.1x. Potential payout: $105."
-       [Screen shows bet details + countdown]
+1. User: "I want to bet that the best AI this month is Codex."
+2. OpenClaw checks if the market is available and places the bet (Yellow backend).
+3. User: "What is the status of the bet?"
+4. Bot checks Yellow; user has lost.
+5. Bot becomes very sad and falls off the table (face `dying`, animation `tableFall`).
 
-User: "Actually, use my DAI on Arbitrum for this."
-Molty: [Processing] "Routing via LI.FI... swapping DAI on Arbitrum
-       to USDC on Polygon... Done! Bet funded."
-       [Shows cross-chain route on screen]
-
-[TIME PASSES — screen shows live ETH price, face shifts
- between nervous/excited as price moves up and down]
-
---- IF ETH HITS $3,300 (WIN) ---
-Molty: [ARMS UP, DANCING, PARTY FACE 🎉]
-       "WE WON! +$105 USDC settled to your wallet! 🦞"
-       [Screen: confetti + final P&L]
-
---- IF ETH STAYS BELOW (LOSS) ---
-Molty: [Sad face, arms droop...]
-       "I... I believed in ETH..."
-       [Drives forward off table edge, falls] 💀
-```
-
-Molty is general-purpose — sports betting, election outcomes, any prediction market event works. Crypto is chosen purely for the demo because it resonates with judges.
+Crypto and 24/7 markets keep the swap flow always demoable; the prediction flow shows Yellow state channels and the memorable table-fall reaction.
 
 ---
 
 ## Robot Face States
 
-The screen shows animated eyes/expressions that change based on context:
+The **molty-soul** skill defines when to use each face (e.g. `celebrating` after profit, `dying` + table fall on bet loss). The screen shows animated eyes/expressions that change based on context:
 
 | State         | When                     | Visual                               |
 | ------------- | ------------------------ | ------------------------------------ |
@@ -205,22 +171,23 @@ The screen shows animated eyes/expressions that change based on context:
 ```
 molty/
 ├── README.md                    # Project overview + demo video
-├── docs/
-│   ├── architecture.md          # Full technical architecture
-│   └── context.md               # THIS FILE
-├── robot/                       # Hardware firmware (ESP32/RPi)
-│   └── src/                     # Motor control, screen, WebSocket, audio
-├── server/                      # EC2 backend (WebSocket + speech)
-├── skills/                      # OpenClaw custom skills
-│   ├── molty-betting/           # Yellow SDK + Nitrolite
-│   ├── molty-events/            # Market data APIs
-│   ├── molty-robot/             # Robot hardware commands
-│   ├── molty-portfolio/         # Position monitoring
-│   ├── molty-crosschain/        # LI.FI SDK
-│   └── molty-wallet/            # Arc/Circle Wallets
-├── face-ui/                     # Robot face web app (HTML Canvas/React)
-├── contracts/                   # Smart contracts (if needed)
-└── demo/                        # Demo video + screenshots
+├── ARCHITECTURE.md              # Full technical architecture
+├── CONTEXT.md                   # THIS FILE
+├── HACK_DEMO.md                 # LI.FI + Yellow on Base demo
+├── molty/skills/                # OpenClaw custom skills
+│   ├── molty-soul/              # Personality + face directives
+│   ├── molty-events/            # Stork price feeds
+│   ├── molty-swap/              # LI.FI swaps
+│   └── molty-portfolio/         # Wallet balances
+├── apps/
+│   ├── kiosk/                   # Electron + React (face UI, voice, OpenClaw client)
+│   ├── backend/                 # Yellow prediction (lib/yellow.js)
+│   └── dashboard/               # Next.js dashboard
+├── research/
+│   ├── yellow-swap/             # Yellow state-channel scripts
+│   └── lifi-swap/               # LI.FI swap scripts
+├── scripts/                     # Audio, motors
+└── demo/                        # Demo video + screenshots (if present)
 ```
 
 ---
@@ -316,23 +283,24 @@ The face UI is prioritized because:
 
 ## 24-Hour Sprint (Submission Feb 8)
 
-**Current state:** Kiosk app = default Vite template. No face UI yet. Architecture docs done.
+**Submission demo = two flows:** (1) Swap USDC→ETH then profit check + celebrate. (2) Bet on "best AI is Codex" via Yellow, status check, lose, table fall.
 
 **Order of attack:**
 
 | Priority | Task                                                                       | Why                                                          |
 | -------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| 1        | **Face UI in kiosk** — all face states + simple lobster/robot character    | Demo is video; face is the hero. Works without hardware.     |
-| 2        | **Stub or minimal agent** — e.g. button/voice trigger → set face state     | Proves pipeline: input → face reaction.                      |
-| 3        | **One prize integration** — Yellow OR Arc OR LI.FI, even minimal           | Judges want to see _one_ clear integration; depth > breadth. |
-| 4        | **Demo video** — 2–3 min with face states + one onchain/cross-chain moment | Required for all three partners + finalists.                 |
-| 5        | **README + repo** — setup, demo link, architecture link                    | Submission form needs repo + clarity.                        |
+| 1        | **Face UI in kiosk** — all face states + lobster/robot character           | Demo is video; face is the hero. Works without hardware.     |
+| 2        | **Agent pipeline** — voice/button → OpenClaw → face state                  | Proves input → swap or bet → face reaction.                  |
+| 3        | **Flow A** — LI.FI swap (molty-swap) + profit check (molty-events/portfolio) + celebrate | One clear LI.FI integration.                          |
+| 4        | **Flow B** — Yellow bet (backend) + status check + lose → dying + tableFall | One clear Yellow integration; memorable table fall.     |
+| 5        | **Demo video** — 2–3 min showing both flows                                 | Required for partners + finalists.                           |
+| 6        | **README + repo** — setup, demo link, ARCHITECTURE.md link                  | Submission form needs repo + clarity.                        |
 
-**Face states to implement (from spec):** `idle` | `listening` | `thinking` | `excited` | `watching` | `winning` | `losing` | `celebrating` | `dying` | `error`. Start with idle → thinking → celebrating/dying for the video.
+**Face states (molty-soul):** `idle` | `listening` | `thinking` | `excited` | `watching` | `winning` | `losing` | `celebrating` | `dying` | `error`. For the video: idle → thinking → celebrating (Flow A) and dying + table fall (Flow B).
 
-**If time runs out:** A working face UI + a clear 2-min video explaining architecture and showing one integration beats an incomplete full stack.
+**If time runs out:** A working face UI + a clear 2-min video showing both flows (or one flow in depth) beats an incomplete full stack.
 
 ---
 
-_This document should be provided to any AI assistant helping with the Molty project.
-Last updated: February 7, 2026_
+_This document should be provided to any AI assistant helping with the Molty project._
+_Last updated: February 8, 2026_
