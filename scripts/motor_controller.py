@@ -355,13 +355,11 @@ def anim_dying(stop_event: threading.Event):
         (120, 90),  # Back to right
     ]
 
+    drive(speed, -speed)
     # Ramp up motors with circular servo motion
     speeds = [0.3, 0.5, 0.7, 1.0]
-    for i, speed in enumerate(speeds):
-        drive(speed, -speed)
-        # Move through circular positions during acceleration
+    for i, speed in enumerate(speeds):        
         set_servos(*servo_positions[i * 2 % len(servo_positions)])
-        time.sleep(0.2)
 
     # Full speed spin with continuous circular waving
     drive(1.0, -1.0)
