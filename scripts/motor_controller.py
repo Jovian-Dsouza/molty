@@ -355,7 +355,7 @@ def anim_dying(stop_event: threading.Event):
         (120, 90),  # Back to right
     ]
 
-    drive(speed, -speed)
+    drive(1, -1)
     # Ramp up motors with circular servo motion
     speeds = [0.3, 0.5, 0.7, 1.0]
     for i, speed in enumerate(speeds):        
