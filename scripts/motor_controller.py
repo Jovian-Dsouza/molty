@@ -89,7 +89,7 @@ def emit_status(status: str, message: str = ""):
         pass
 
 
-MAX_SPEED = 0.1
+MAX_SPEED = 0.2
 
 
 def drive(speed_a: float, speed_b: float):
