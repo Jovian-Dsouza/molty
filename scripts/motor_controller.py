@@ -36,26 +36,45 @@ import signal
 SIMULATION_MODE = False
 
 try:
-    from gpiozero import Motor, OutputDevice, AngularServo
+    from gpiozero import Motor, OutputDevice
 except ImportError:
     SIMULATION_MODE = True
+
+SERVO_AVAILABLE = False
+try:
+    import RPi.GPIO as GPIO
+    SERVO_AVAILABLE = True
+except ImportError:
+    pass
 
 # Motor instances (set up after import check)
 motor_a = None
 motor_b = None
 standby = None
-servo_1 = None
-servo_2 = None
 
 if not SIMULATION_MODE:
     try:
         motor_a = Motor(forward=1, backward=12)
         motor_b = Motor(forward=13, backward=6)
         standby = OutputDevice(26, initial_value=True)
-        servo_1 = AngularServo(5, min_angle=0, max_angle=180, min_pulse_width=0.0005, max_pulse_width=0.0025)
-        servo_2 = AngularServo(21, min_angle=0, max_angle=180, min_pulse_width=0.0005, max_pulse_width=0.0025)
     except Exception as e:
         SIMULATION_MODE = True
+
+# Servo PWM instances (RPi.GPIO)
+pwm_servo_1 = None
+pwm_servo_2 = None
+
+if not SIMULATION_MODE and SERVO_AVAILABLE:
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(5, GPIO.OUT)
+        GPIO.setup(21, GPIO.OUT)
+        pwm_servo_1 = GPIO.PWM(5, 50)
+        pwm_servo_2 = GPIO.PWM(21, 50)
+        pwm_servo_1.start(0)
+        pwm_servo_2.start(0)
+    except Exception:
+        SERVO_AVAILABLE = False
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -70,10 +89,15 @@ def emit_status(status: str, message: str = ""):
         pass
 
 
+MAX_SPEED = 0.1
+
+
 def drive(speed_a: float, speed_b: float):
     """Set motor speeds. Positive = forward, negative = backward, 0 = stop."""
     if SIMULATION_MODE:
         return
+    speed_a = max(-MAX_SPEED, min(MAX_SPEED, speed_a))
+    speed_b = max(-MAX_SPEED, min(MAX_SPEED, speed_b))
     if speed_a > 0:
         motor_a.forward(min(abs(speed_a), 1.0))
     elif speed_a < 0:
@@ -97,12 +121,22 @@ def stop_motors():
     motor_b.stop()
 
 
+def set_servo_angle(pwm, angle: float):
+    """Move a single servo to the given angle using tested duty-cycle formula."""
+    if pwm is None:
+        return
+    duty = 2 + (angle / 18)
+    pwm.ChangeDutyCycle(duty)
+    time.sleep(0.5)
+    pwm.ChangeDutyCycle(0)
+
+
 def set_servos(angle1: float, angle2: float):
     """Set both servos to given angles (0-180)."""
-    if SIMULATION_MODE:
+    if SIMULATION_MODE or not SERVO_AVAILABLE:
         return
-    servo_1.angle = max(0, min(180, angle1))
-    servo_2.angle = max(0, min(180, angle2))
+    set_servo_angle(pwm_servo_1, max(0, min(180, angle1)))
+    set_servo_angle(pwm_servo_2, max(0, min(180, angle2)))
 
 
 def center_servos():
@@ -112,10 +146,10 @@ def center_servos():
 
 def detach_servos():
     """Stop sending PWM signal to prevent jitter."""
-    if SIMULATION_MODE:
+    if SIMULATION_MODE or not SERVO_AVAILABLE:
         return
-    servo_1.detach()
-    servo_2.detach()
+    pwm_servo_1.ChangeDutyCycle(0)
+    pwm_servo_2.ChangeDutyCycle(0)
 
 
 def interruptible_sleep(seconds: float, stop_event: threading.Event, step: float = 0.05):
@@ -155,9 +189,15 @@ def anim_listening(stop_event: threading.Event):
 
 
 def anim_thinking(stop_event: threading.Event):
-    """Stop motors — processing. Claws at neutral."""
+    """Stop motors — processing. Arms rotate back and forth."""
     stop_motors()
-    center_servos()
+    while not stop_event.is_set():
+        set_servos(45, 135)
+        if interruptible_sleep(1.0, stop_event):
+            break
+        set_servos(135, 45)
+        if interruptible_sleep(1.0, stop_event):
+            break
     detach_servos()
 
 
@@ -397,6 +437,10 @@ class MotorController:
             self._thread.join(timeout=2.0)
         stop_motors()
         detach_servos()
+        if not SIMULATION_MODE and SERVO_AVAILABLE:
+            pwm_servo_1.stop()
+            pwm_servo_2.stop()
+            GPIO.cleanup([5, 21])
         if not SIMULATION_MODE and standby:
             standby.off()
         emit_status("shutdown", "motor controller shutting down")
