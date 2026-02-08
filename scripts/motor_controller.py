@@ -335,29 +335,43 @@ def anim_dying(stop_event: threading.Event):
     set_servos(90, 90)
     time.sleep(0.3)
 
-    # Ramp up motors with frantic servo flailing
-    speeds = [0.3, 0.5, 0.7, 1.0]
+    # Smooth circular motion servo positions (clockwise direction)
     servo_positions = [
-        (150, 30), (30, 150), (180, 0), (0, 180),
-        (120, 60), (60, 120), (150, 150), (30, 30)
+        (90, 90),   # Center
+        (120, 90),  # Right
+        (135, 75),  # Right-down
+        (135, 60),  # Down-right
+        (120, 45),  # Down
+        (90, 45),   # Down-center
+        (60, 45),   # Down-left
+        (45, 60),   # Left-down
+        (45, 75),   # Left
+        (45, 90),   # Left-center
+        (60, 120),  # Left-up
+        (75, 135),  # Up-left
+        (90, 135),  # Up
+        (105, 120), # Up-right
+        (120, 105), # Right-up
+        (120, 90),  # Back to right
     ]
 
-    drive(1.0, -1.0)
+    # Ramp up motors with circular servo motion
+    speeds = [0.3, 0.5, 0.7, 1.0]
     for i, speed in enumerate(speeds):
-        # Rapid servo movements during acceleration
-        set_servos(*servo_positions[i % len(servo_positions)])
-        set_servos(*servo_positions[(i + 1) % len(servo_positions)])
+        drive(speed, -speed)
+        # Move through circular positions during acceleration
+        set_servos(*servo_positions[i * 2 % len(servo_positions)])
+        time.sleep(0.2)
 
-
-    # Full speed spin with continuous dramatic waving
+    # Full speed spin with continuous circular waving
     drive(1.0, -1.0)
     end_time = time.time() + 10
     position_index = 0
 
     while time.time() < end_time:
-        # Continuous alternating servo motion
+        # Continuous circular servo motion
         set_servos(*servo_positions[position_index % len(servo_positions)])
-        time.sleep(0.2)
+        time.sleep(0.15)
         position_index += 1
 
     stop_motors()
