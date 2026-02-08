@@ -61,3 +61,14 @@ contextBridge.exposeInMainWorld('openclaw', {
   onTranscript: (handler: (text: string) => void) =>
     subscribe<string>('openclaw:transcript', handler),
 })
+
+contextBridge.exposeInMainWorld('motors', {
+  command: (cmd: Record<string, unknown>) =>
+    ipcRenderer.invoke('motors:command', cmd) as Promise<{ ok: boolean; error?: string }>,
+  setEmotion: (emotion: string) =>
+    ipcRenderer.invoke('motors:set-emotion', emotion) as Promise<{ ok: boolean; error?: string }>,
+  stop: () =>
+    ipcRenderer.invoke('motors:stop') as Promise<{ ok: boolean; error?: string }>,
+  onStatus: (handler: (status: { type: string; status: string; message: string }) => void) =>
+    subscribe<{ type: string; status: string; message: string }>('motors:status', handler),
+})

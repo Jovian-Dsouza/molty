@@ -37,3 +37,4 @@ colosseum-credentials.env
 .idea
 *.swp
 *.swo
+*.pyc
