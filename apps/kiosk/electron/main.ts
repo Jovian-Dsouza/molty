@@ -937,6 +937,8 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
+app.commandLine.appendSwitch('disable-features', 'AudioServiceSandbox')
+
 app.whenReady().then(() => {
   startMotorController();
   createWindow();
