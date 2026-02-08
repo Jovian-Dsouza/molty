@@ -1,4 +1,4 @@
-## Setup
+## Molty
 
 ```
 pnpm install
