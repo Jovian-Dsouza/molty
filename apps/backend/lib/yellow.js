@@ -16,12 +16,17 @@ import {
   RPCMethod,
 } from '@erc7824/nitrolite';
 import { createWalletClient, http } from 'viem';
-import { sepolia } from 'viem/chains';
+import { base, sepolia } from 'viem/chains';
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 
 const PROTOCOL = 'NitroRPC/0.2';
 const APP_NAME = 'molty-prediction';
 const SCOPE = 'molty.app';
+
+/** Production = Base mainnet + usdc; Sandbox = Sepolia + ytest.usd */
+function isProduction(wsUrl) {
+  return typeof wsUrl === 'string' && wsUrl.includes('clearnet.yellow.com') && !wsUrl.includes('sandbox');
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -87,7 +92,10 @@ export async function connectAndCreateMarket({
   const sessionPrivateKey = existingSessionKey || generatePrivateKey();
   const sessionAccount = privateKeyToAccount(sessionPrivateKey);
   const sessionSigner = createECDSAMessageSigner(sessionPrivateKey);
-  const walletClient = createWalletClient({ chain: sepolia, transport: http(rpcUrl), account });
+  const prod = isProduction(wsUrl);
+  const chain = prod ? base : sepolia;
+  const asset = prod ? 'usdc' : 'ytest.usd';
+  const walletClient = createWalletClient({ chain, transport: http(rpcUrl), account });
 
   const ws = await new Promise((resolve, reject) => {
     const s = new WebSocket(wsUrl);
@@ -96,12 +104,12 @@ export async function connectAndCreateMarket({
     setTimeout(() => reject(new Error('WS timeout')), 10000);
   });
 
-  // Auth
+  // Auth (production = usdc, sandbox = ytest.usd)
   const authParams = {
     address: account.address,
     session_key: sessionAccount.address,
     application: APP_NAME,
-    allowances: [{ asset: 'ytest.usd', amount: '1000000000' }],
+    allowances: [{ asset, amount: prod ? '1000000000' : '1000000000' }],
     expires_at: BigInt(Math.floor(Date.now() / 1000) + 7200),
     scope: SCOPE,
   };
@@ -133,8 +141,8 @@ export async function connectAndCreateMarket({
     nonce: Date.now(),
   };
   const allocations = [
-    { participant: account.address, asset: 'ytest.usd', amount },
-    { participant: broker, asset: 'ytest.usd', amount: '0' },
+    { participant: account.address, asset, amount },
+    { participant: broker, asset, amount: '0' },
   ];
 
   ws.send(await createAppSessionMessage(sessionSigner, { definition: appDef, allocations }));
@@ -226,12 +234,15 @@ export async function resolveMarket({
     setTimeout(() => reject(new Error('WS timeout')), 10000);
   });
 
-  const walletClient = createWalletClient({ chain: sepolia, transport: http(rpcUrl), account });
+  const prod = isProduction(wsUrl);
+  const chain = prod ? base : sepolia;
+  const asset = prod ? 'usdc' : 'ytest.usd';
+  const walletClient = createWalletClient({ chain, transport: http(rpcUrl), account });
   const authParams = {
     address: account.address,
     session_key: privateKeyToAccount(sessionPrivateKey).address,
     application: APP_NAME,
-    allowances: [{ asset: 'ytest.usd', amount: '1000000000' }],
+    allowances: [{ asset, amount: '1000000000' }],
     expires_at: BigInt(Math.floor(Date.now() / 1000) + 7200),
     scope: SCOPE,
   };

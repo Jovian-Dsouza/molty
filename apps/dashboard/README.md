@@ -19,19 +19,20 @@ Next.js dashboard for Yellow prediction markets: create markets, view prediction
 2. Copy env and set prediction API URL:
    ```bash
    cp .env.example .env.local
-   # NEXT_PUBLIC_PREDICTION_API_URL=http://localhost:3999
+   # For local: NEXT_PUBLIC_PREDICTION_API_URL=http://localhost:3999
    ```
 
-3. Start the prediction-market API (so create/resolve work):
+3. Start the **backend** (prediction API) in one terminal:
    ```bash
-   cd research/prediction-market && npm start
+   pnpm --filter prediction-market start
    ```
+   Backend runs at http://localhost:3999 (health: http://localhost:3999/health).
 
-4. Run the dashboard:
+4. Run the **dashboard** in another terminal:
    ```bash
    pnpm --filter dashboard dev
    ```
-   Opens at http://localhost:3001
+   Dashboard at http://localhost:3001. Create market / fetch markets will call the backend.
 
 ## Pages
 

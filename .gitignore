@@ -23,6 +23,7 @@ pnpm-debug.log*
 # Local Env Files
 .env
 .env.local
+colosseum-credentials.env
 .env.development.local
 .env.test.local
 .env.production.local

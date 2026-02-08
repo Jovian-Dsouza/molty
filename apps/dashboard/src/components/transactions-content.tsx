@@ -62,7 +62,7 @@ export default function TransactionsContent() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Transactions</h1>
           <p className="text-muted-foreground">
-            Yellow Custody contract — deposits & withdrawals
+            Custody — deposits & withdrawals on-chain
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -92,11 +92,11 @@ export default function TransactionsContent() {
         </div>
       )}
 
-      <Card>
+      <Card className="card-highlight">
         <CardHeader>
           <CardTitle>On-chain activity</CardTitle>
           <CardDescription>
-            Last 50 Deposited / Withdrawn events from Yellow Custody
+            Last 50 Deposited / Withdrawn events from custody
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -128,8 +128,8 @@ export default function TransactionsContent() {
                       <span
                         className={
                           tx.type === "Deposit"
-                            ? "text-emerald-500"
-                            : "text-amber-500"
+                            ? "text-win font-medium"
+                            : "text-primary font-medium"
                         }
                       >
                         {tx.type}

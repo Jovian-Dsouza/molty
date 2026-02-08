@@ -22,12 +22,12 @@
 
    | Name | Value | Notes |
    |------|--------|--------|
-   | `NEXT_PUBLIC_PREDICTION_API_URL` | `https://your-prediction-api.com` | URL of your prediction market API (create/resolve). |
+   | `NEXT_PUBLIC_PREDICTION_API_URL` | `https://molty-production.up.railway.app` | **Backend API URL** (Railway, etc.). Must be your **backend**, not the dashboard URL — wrong value causes HTTP 405 on Create market. |
    | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | `845fb350ba83d50180234b4f77a4455a` | From [WalletConnect Cloud](https://cloud.walletconnect.com). |
 
 5. **Deploy:** Save and deploy. Vercel will build and host the dashboard.
 
-**Important:** The prediction API (`research/prediction-market`) must be deployed and reachable at the URL you set in `NEXT_PUBLIC_PREDICTION_API_URL`. You can host it on Railway, Render, Fly.io, or a small VPS and point the dashboard to that URL.
+**Important:** Set `NEXT_PUBLIC_PREDICTION_API_URL` to your **backend** only (e.g. Railway). If you set it to your Vercel dashboard URL by mistake, Create market will return **HTTP 405** because the dashboard would be calling itself instead of the API.
 
 ---
 

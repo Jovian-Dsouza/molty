@@ -1,0 +1,14 @@
+{
+  "name": "yellow-swap",
+  "version": "1.0.0",
+  "description": "Yellow Network testnet — full state channel lifecycle: auth, channel, trade, settle",
+  "type": "module",
+  "scripts": {
+    "start": "node yellow-swap.js"
+  },
+  "dependencies": {
+    "@erc7824/nitrolite": "^0.5.3",
+    "viem": "^2.45.1",
+    "ws": "^8.19.0"
+  }
+}

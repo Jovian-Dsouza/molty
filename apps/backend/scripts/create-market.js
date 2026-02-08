@@ -6,7 +6,12 @@
  *
  * Example: "Will ETH be above $3,500 by tomorrow?"
  */
-import 'dotenv/config';
+import path from "path";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
 import { fetchCurrentPrice } from '../lib/price.js';
 import { connectAndCreateMarket } from '../lib/yellow.js';
 import { loadState, addMarket, saveState } from '../lib/store.js';
