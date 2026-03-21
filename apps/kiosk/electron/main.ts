@@ -442,7 +442,14 @@ function attachSocketHandlers(socket: WebSocketLike) {
       return;
     }
 
-    console.log("[Gateway] ← Pico:", msg.type);
+    // Log message type and content for debugging
+    const msgPayload = msg.payload as Record<string, unknown> | undefined;
+    if (msg.type === "message.update" || msg.type === "message.create") {
+      const content = (msgPayload?.content as string) ?? "";
+      console.log(`[Gateway] ← Pico: ${msg.type} content="${content.slice(0, 150)}"`);
+    } else {
+      console.log("[Gateway] ← Pico:", msg.type);
+    }
 
     // Respond to application-level pings
     if (msg?.type === "ping") {

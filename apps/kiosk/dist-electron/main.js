@@ -47,16 +47,16 @@ async function startTranscriber() {
   }
   try {
     console.log("[STT] Creating streaming transcriber...");
+    console.log("[STT] API key length:", process.env.ASSEMBLYAI_API_KEY?.length ?? 0);
     transcriber = assemblyai.streaming.transcriber({
       sampleRate: 16e3,
+      speechModel: "universal-streaming-english",
       formatTurns: true,
-      keyterms: ["Molty"],
-      // Conservative turn detection — give users more time to pause/think
-      // before the turn is considered complete (prevents premature sends).
       endOfTurnConfidenceThreshold: 0.7,
       minEndOfTurnSilenceWhenConfident: 800,
       maxTurnSilence: 3600
     });
+    let connectResolved = false;
     transcriber.on("turn", (turn) => {
       console.log(
         `[STT] Turn: end_of_turn=${turn.end_of_turn} transcript="${turn.transcript}"`
@@ -68,22 +68,24 @@ async function startTranscriber() {
       }
     });
     transcriber.on("error", (err) => {
-      console.error("[STT] Error:", err.message);
+      console.error("[STT] Error event:", err.message ?? err);
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send("openclaw:transcript-error", err.message);
       }
     });
-    transcriber.on("close", () => {
-      console.log("[STT] Transcriber closed");
+    transcriber.on("close", (code, reason) => {
+      console.log("[STT] Transcriber closed, code:", code, "reason:", reason, "hadConnected:", connectResolved);
       transcriber = null;
     });
+    console.log("[STT] Calling transcriber.connect()...");
     await transcriber.connect();
+    connectResolved = true;
     console.log("[STT] Transcriber connected successfully");
     return { ok: true };
   } catch (err) {
     transcriber = null;
-    const message = err instanceof Error ? err.message : "Failed to start transcriber";
-    console.error("[STT] Failed to start:", message);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[STT] Failed to start:", message, err);
     return { ok: false, error: message };
   }
 }
@@ -294,17 +296,25 @@ function attachSocketHandlers(socket) {
   const handleMessage = (...args) => {
     const eventOrData = args[0];
     const data = eventOrData?.data ?? eventOrData;
-    const text = toText(data);
-    console.log("[Gateway] ← IN:", text.slice(0, 200));
+    let text = toText(data);
+    const jsonStart = text.indexOf("{");
+    if (jsonStart > 0) {
+      text = text.slice(jsonStart);
+    }
     let msg;
     try {
       msg = JSON.parse(text);
     } catch {
+      console.log("[Gateway] ← IN (unparseable):", text.slice(0, 200));
       broadcastMessage("in", text);
       return;
     }
-    if (msg?.type) {
-      console.log("[Gateway] ← Pico msg type:", msg.type);
+    const msgPayload = msg.payload;
+    if (msg.type === "message.update" || msg.type === "message.create") {
+      const content = msgPayload?.content ?? "";
+      console.log(`[Gateway] ← Pico: ${msg.type} content="${content.slice(0, 150)}"`);
+    } else {
+      console.log("[Gateway] ← Pico:", msg.type);
     }
     if (msg?.type === "ping") {
       const pong = JSON.stringify({ type: "pong", id: msg.id ?? "" });
@@ -314,7 +324,7 @@ function attachSocketHandlers(socket) {
       }
       return;
     }
-    broadcastMessage("in", text);
+    broadcastMessage("in", JSON.stringify(msg));
   };
   if (typeof socket.on === "function") {
     socket.on("open", handleOpen);
@@ -534,9 +544,17 @@ ipcMain.handle("hume:stop", () => {
   humeStopSpeaking();
   return { ok: true };
 });
-ipcMain.handle("openclaw:start-listening", () => startTranscriber());
+ipcMain.handle("openclaw:start-listening", () => {
+  console.log("[STT] start-listening IPC received");
+  return startTranscriber();
+});
 ipcMain.handle("openclaw:stop-listening", () => stopTranscriber());
+let audioChunkCount = 0;
 ipcMain.on("openclaw:audio-chunk", (_event, pcmData) => {
+  audioChunkCount++;
+  if (audioChunkCount % 100 === 1) {
+    console.log(`[STT] Audio chunk #${audioChunkCount} received, size=${pcmData.byteLength}, transcriber=${transcriber ? "active" : "null"}`);
+  }
   if (transcriber) {
     const buf = Buffer.from(pcmData);
     transcriber.sendAudio(
