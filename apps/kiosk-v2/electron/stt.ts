@@ -4,15 +4,21 @@ import { AssemblyAI } from "assemblyai";
 
 // ── State ────────────────────────────────────────────────────────────────
 
-const assemblyai = process.env.ASSEMBLYAI_API_KEY
-  ? new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY })
-  : null;
+let assemblyai: AssemblyAI | null = null;
 
 type StreamingTranscriberInstance = ReturnType<
-  NonNullable<typeof assemblyai>["streaming"]["transcriber"]
+  AssemblyAI["streaming"]["transcriber"]
 >;
 
 let transcriber: StreamingTranscriberInstance | null = null;
+
+function getClient(): AssemblyAI | null {
+  if (assemblyai) return assemblyai;
+  const key = process.env.ASSEMBLYAI_API_KEY;
+  if (!key) return null;
+  assemblyai = new AssemblyAI({ apiKey: key });
+  return assemblyai;
+}
 
 // ── Public API ───────────────────────────────────────────────────────────
 
@@ -20,7 +26,8 @@ export async function startTranscriber(): Promise<{
   ok: boolean;
   error?: string;
 }> {
-  if (!assemblyai) {
+  const client = getClient();
+  if (!client) {
     console.log("[STT] No ASSEMBLYAI_API_KEY set, skipping");
     return { ok: false, error: "Missing ASSEMBLYAI_API_KEY" };
   }
@@ -31,7 +38,7 @@ export async function startTranscriber(): Promise<{
 
   try {
     console.log("[STT] Creating streaming transcriber...");
-    transcriber = assemblyai.streaming.transcriber({
+    transcriber = client.streaming.transcriber({
       sampleRate: 16_000,
       speechModel: "universal-streaming-english",
       formatTurns: true,

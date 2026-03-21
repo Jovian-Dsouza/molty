@@ -1,12 +1,21 @@
 import { BrowserWindow } from "electron";
 
-// ── Config ───────────────────────────────────────────────────────────────
+// ── Config (read lazily so loadEnv() has time to run) ────────────────────
 
-const HUME_API_KEY = process.env.HUME_API_KEY;
-const HUME_VOICE_NAME = process.env.HUME_VOICE_NAME || "";
-const HUME_VOICE_DESCRIPTION =
-  process.env.HUME_VOICE_DESCRIPTION ||
-  "Upbeat, enthusiastic, and playful masculine voice with high energy. Speaks quickly and expressively, like an excited robot mascot. Occasionally dramatic.";
+function getHumeApiKey(): string | undefined {
+  return process.env.HUME_API_KEY;
+}
+
+function getVoiceName(): string {
+  return process.env.HUME_VOICE_NAME || "";
+}
+
+function getVoiceDescription(): string {
+  return (
+    process.env.HUME_VOICE_DESCRIPTION ||
+    "Upbeat, enthusiastic, and playful masculine voice with high energy. Speaks quickly and expressively, like an excited robot mascot. Occasionally dramatic."
+  );
+}
 
 // ── State ────────────────────────────────────────────────────────────────
 
@@ -23,7 +32,7 @@ function broadcast(channel: string, data?: string): void {
 // ── Public API ───────────────────────────────────────────────────────────
 
 export function isAvailable(): boolean {
-  return !!HUME_API_KEY;
+  return !!getHumeApiKey();
 }
 
 /**
@@ -35,7 +44,8 @@ export function isAvailable(): boolean {
 export async function humeStreamSpeak(
   text: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!HUME_API_KEY) {
+  const apiKey = getHumeApiKey();
+  if (!apiKey) {
     broadcast("hume:audio-error", "Missing HUME_API_KEY");
     return { ok: false, error: "Missing HUME_API_KEY" };
   }
@@ -50,12 +60,13 @@ export async function humeStreamSpeak(
   try {
     console.log("[Hume TTS] Streaming:", text.slice(0, 100));
 
+    const voiceName = getVoiceName();
     const utterance: Record<string, unknown> = {
       text,
-      description: HUME_VOICE_DESCRIPTION,
+      description: getVoiceDescription(),
     };
-    if (HUME_VOICE_NAME) {
-      utterance.voice = { name: HUME_VOICE_NAME, provider: "HUME_AI" };
+    if (voiceName) {
+      utterance.voice = { name: voiceName, provider: "HUME_AI" };
     }
 
     const body: Record<string, unknown> = {
@@ -63,13 +74,13 @@ export async function humeStreamSpeak(
       format: { type: "mp3" },
       num_generations: 1,
       strip_headers: false,
-      instant_mode: !!HUME_VOICE_NAME,
+      instant_mode: !!voiceName,
     };
 
     const response = await fetch("https://api.hume.ai/v0/tts/stream/json", {
       method: "POST",
       headers: {
-        "X-Hume-Api-Key": HUME_API_KEY,
+        "X-Hume-Api-Key": apiKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
