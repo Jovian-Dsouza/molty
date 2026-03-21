@@ -92,16 +92,18 @@ async function startTranscriber(): Promise<{ ok: boolean; error?: string }> {
 
   try {
     console.log("[STT] Creating streaming transcriber...");
+    console.log("[STT] API key length:", process.env.ASSEMBLYAI_API_KEY?.length ?? 0);
     transcriber = assemblyai.streaming.transcriber({
       sampleRate: 16_000,
+      speechModel: "universal-streaming-english",
       formatTurns: true,
-      keyterms: ["Molty"],
-      // Conservative turn detection — give users more time to pause/think
-      // before the turn is considered complete (prevents premature sends).
       endOfTurnConfidenceThreshold: 0.7,
       minEndOfTurnSilenceWhenConfident: 800,
       maxTurnSilence: 3600,
     });
+
+    // Track whether close fires before connect resolves
+    let connectResolved = false;
 
     transcriber.on("turn", (turn) => {
       console.log(
@@ -115,25 +117,27 @@ async function startTranscriber(): Promise<{ ok: boolean; error?: string }> {
     });
 
     transcriber.on("error", (err) => {
-      console.error("[STT] Error:", err.message);
+      console.error("[STT] Error event:", err.message ?? err);
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send("openclaw:transcript-error", err.message);
       }
     });
 
-    transcriber.on("close", () => {
-      console.log("[STT] Transcriber closed");
+    transcriber.on("close", (code: number, reason: string) => {
+      console.log("[STT] Transcriber closed, code:", code, "reason:", reason, "hadConnected:", connectResolved);
       transcriber = null;
     });
 
+    console.log("[STT] Calling transcriber.connect()...");
     await transcriber.connect();
+    connectResolved = true;
     console.log("[STT] Transcriber connected successfully");
     return { ok: true };
   } catch (err: unknown) {
     transcriber = null;
     const message =
-      err instanceof Error ? err.message : "Failed to start transcriber";
-    console.error("[STT] Failed to start:", message);
+      err instanceof Error ? err.message : String(err);
+    console.error("[STT] Failed to start:", message, err);
     return { ok: false, error: message };
   }
 }
@@ -419,21 +423,26 @@ function attachSocketHandlers(socket: WebSocketLike) {
   const handleMessage = (...args: unknown[]) => {
     const eventOrData = args[0];
     const data = (eventOrData as { data?: unknown })?.data ?? eventOrData;
-    const text = toText(data);
-    console.log("[Gateway] ← IN:", text.slice(0, 200));
+    let text = toText(data);
+
+    // The ws library may pass Buffers with leading binary framing bytes
+    // from picoclaw's Go WebSocket. Strip everything before the first '{'.
+    const jsonStart = text.indexOf("{");
+    if (jsonStart > 0) {
+      text = text.slice(jsonStart);
+    }
 
     // Parse and handle Pico Protocol messages
     let msg: Record<string, unknown> | undefined;
     try {
       msg = JSON.parse(text);
     } catch {
+      console.log("[Gateway] ← IN (unparseable):", text.slice(0, 200));
       broadcastMessage("in", text);
       return;
     }
 
-    if (msg?.type) {
-      console.log("[Gateway] ← Pico msg type:", msg.type);
-    }
+    console.log("[Gateway] ← Pico:", msg.type);
 
     // Respond to application-level pings
     if (msg?.type === "ping") {
@@ -446,8 +455,8 @@ function attachSocketHandlers(socket: WebSocketLike) {
       return;
     }
 
-    // Forward all other messages to the renderer for useMoltyState to handle
-    broadcastMessage("in", text);
+    // Forward clean JSON to the renderer for useMoltyState to handle
+    broadcastMessage("in", JSON.stringify(msg));
   };
 
   // The ws package uses .on() for event binding
@@ -733,9 +742,17 @@ ipcMain.handle("hume:speak", (_event, text: string) => {
 ipcMain.handle("hume:stop", () => { humeStopSpeaking(); return { ok: true }; });
 
 // AssemblyAI streaming STT
-ipcMain.handle("openclaw:start-listening", () => startTranscriber());
+ipcMain.handle("openclaw:start-listening", () => {
+  console.log("[STT] start-listening IPC received");
+  return startTranscriber();
+});
 ipcMain.handle("openclaw:stop-listening", () => stopTranscriber());
+let audioChunkCount = 0;
 ipcMain.on("openclaw:audio-chunk", (_event, pcmData: ArrayBuffer) => {
+  audioChunkCount++;
+  if (audioChunkCount % 100 === 1) {
+    console.log(`[STT] Audio chunk #${audioChunkCount} received, size=${pcmData.byteLength}, transcriber=${transcriber ? "active" : "null"}`);
+  }
   if (transcriber) {
     const buf = Buffer.from(pcmData);
     transcriber.sendAudio(

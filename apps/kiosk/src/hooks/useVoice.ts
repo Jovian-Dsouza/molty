@@ -14,16 +14,23 @@ export function useVoice(enabled: boolean) {
   const pausedRef = useRef(false);
 
   const start = useCallback(async () => {
-    if (streamRef.current) return;
+    if (streamRef.current) {
+      console.log("[useVoice] Already started (stream exists)");
+      return;
+    }
+
+    console.log("[useVoice] Starting voice capture pipeline...");
 
     // Start the AssemblyAI transcriber in the main process
     const result = await window.openclaw.startListening();
+    console.log("[useVoice] startListening result:", JSON.stringify(result));
     if (!result.ok) {
       console.error("[useVoice] Failed to start transcriber:", result.error);
       return;
     }
 
     // Capture mic audio
+    console.log("[useVoice] Requesting microphone access...");
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         sampleRate: 16000,
@@ -32,6 +39,7 @@ export function useVoice(enabled: boolean) {
         noiseSuppression: true,
       },
     });
+    console.log("[useVoice] Microphone granted, tracks:", stream.getAudioTracks().length);
     streamRef.current = stream;
 
     // Set up AudioContext to resample + extract PCM
@@ -45,6 +53,7 @@ export function useVoice(enabled: boolean) {
     const processor = audioCtx.createScriptProcessor(4096, 1, 1);
     processorRef.current = processor;
 
+    let chunkCount = 0;
     processor.onaudioprocess = (event) => {
       if (pausedRef.current) return;
 
@@ -57,12 +66,20 @@ export function useVoice(enabled: boolean) {
         int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
       }
 
+      chunkCount++;
+      if (chunkCount % 50 === 1) {
+        // Log every ~50 chunks (~3.2s of audio at 4096 samples/16kHz)
+        const maxAmp = float32.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+        console.log(`[useVoice] Audio chunk #${chunkCount}, maxAmplitude=${maxAmp.toFixed(4)}, paused=${pausedRef.current}`);
+      }
+
       window.openclaw.sendAudioChunk(int16.buffer);
     };
 
     source.connect(processor);
     processor.connect(audioCtx.destination); // required for ScriptProcessor to fire
 
+    console.log("[useVoice] Audio pipeline connected — now listening");
     setIsListening(true);
   }, []);
 
@@ -111,6 +128,7 @@ export function useVoice(enabled: boolean) {
   // Listen for transcript events from main process (accept even when paused so we don't drop later sentences)
   useEffect(() => {
     const off = window.openclaw.onTranscript((text) => {
+      console.log("[useVoice] Transcript received:", text);
       setTranscript(text);
     });
     return off;

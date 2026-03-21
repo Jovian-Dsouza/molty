@@ -64,6 +64,12 @@ export function useMoltyState() {
   const { isListening, transcript, setTranscript, pause, resume } =
     useVoice(isReady);
 
+  // Debug: log key state transitions
+  useEffect(() => {
+    console.log("[Molty] State: isConnected=%s isReady=%s isListening=%s face=%s",
+      isConnected, isReady, isListening, face);
+  }, [isConnected, isReady, isListening, face]);
+
   // Update face based on voice state
   useEffect(() => {
     if (!processingRef.current && !thinkingLockRef.current && isListening) {
@@ -393,6 +399,7 @@ export function useMoltyState() {
     // Track the latest message content across create/update events
     let latestMessageId: string | null = null;
     let latestContent = "";
+    let typingDone = false;
 
     const finalizeSpeech = async (rawContent: string) => {
       if (interruptedRef.current) {
@@ -407,6 +414,7 @@ export function useMoltyState() {
       console.log("[Molty] Final response:", finalText.slice(0, 120), agentFace ? `[face:${agentFace}]` : "");
       latestMessageId = null;
       latestContent = "";
+      typingDone = false;
 
       if (!finalText.trim()) {
         processingRef.current = false;
@@ -471,13 +479,15 @@ export function useMoltyState() {
         return;
       }
 
-      // typing.stop — agent finished; trigger final speech with accumulated content
+      // typing.stop — agent finished generating; mark that we should finalize
+      // after the next message.update (picoclaw often sends typing.stop before
+      // the final message.update arrives)
       if (msgType === "typing.stop") {
-        if (latestContent) {
+        typingDone = true;
+        // If we already have real (non-placeholder) content, finalize now
+        if (latestContent && !isPlaceholder(latestContent)) {
           await finalizeSpeech(latestContent);
-        } else if (processingRef.current) {
-          // No content received — treat as empty response
-          await finalizeSpeech("");
+          typingDone = false;
         }
         return;
       }
@@ -523,6 +533,12 @@ export function useMoltyState() {
           if (streamFace && !thinkingLockRef.current) setFace(streamFace);
           const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
           setSubtitle(display);
+        }
+
+        // If typing.stop already arrived, finalize now with the real content
+        if (typingDone && content && !isPlaceholder(content)) {
+          typingDone = false;
+          await finalizeSpeech(content);
         }
         return;
       }
