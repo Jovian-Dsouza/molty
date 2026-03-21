@@ -70,6 +70,65 @@ function toText(data: unknown): string {
   }
 }
 
+function extractJsonMessages(text: string): Record<string, unknown>[] {
+  // Fast path: the entire text is a single valid JSON object
+  try {
+    const single = JSON.parse(text);
+    if (typeof single === "object" && single !== null) return [single];
+  } catch {
+    /* fall through to multi-message extraction */
+  }
+
+  const messages: Record<string, unknown>[] = [];
+  let pos = 0;
+
+  while (pos < text.length) {
+    const start = text.indexOf("{", pos);
+    if (start < 0) break;
+
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let end = -1;
+
+    for (let i = start; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      if (esc) {
+        esc = false;
+        continue;
+      }
+      if (inStr) {
+        if (ch === 0x5c) esc = true;
+        else if (ch === 0x22) inStr = false;
+        continue;
+      }
+      if (ch === 0x22) {
+        inStr = true;
+        continue;
+      }
+      if (ch === 0x7b) depth++;
+      else if (ch === 0x7d) {
+        depth--;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+
+    if (end < 0) break;
+
+    try {
+      messages.push(JSON.parse(text.slice(start, end)));
+    } catch {
+      /* skip malformed segment */
+    }
+    pos = end;
+  }
+
+  return messages;
+}
+
 // ── Socket ───────────────────────────────────────────────────────────────
 
 function attachSocketHandlers(socket: WebSocket, url: string): void {
@@ -80,44 +139,38 @@ function attachSocketHandlers(socket: WebSocket, url: string): void {
   });
 
   socket.on("message", (raw) => {
-    let text = toText(raw);
+    const text = toText(raw);
+    const messages = extractJsonMessages(text);
 
-    // Strip leading binary framing bytes before the first '{'
-    const jsonStart = text.indexOf("{");
-    if (jsonStart > 0) {
-      text = text.slice(jsonStart);
-    }
-
-    let msg: Record<string, unknown> | undefined;
-    try {
-      msg = JSON.parse(text);
-    } catch {
+    if (messages.length === 0) {
       console.log("[Picoclaw] <- IN (unparseable):", text.slice(0, 200));
       broadcastMessage("in", text);
       return;
     }
 
-    const msgPayload = msg.payload as Record<string, unknown> | undefined;
-    if (msg.type === "message.update" || msg.type === "message.create") {
-      const content = (msgPayload?.content as string) ?? "";
-      console.log(
-        `[Picoclaw] <- ${msg.type} content="${content.slice(0, 150)}"`,
-      );
-    } else {
-      console.log("[Picoclaw] <-", msg.type);
-    }
-
-    // Respond to application-level pings
-    if (msg.type === "ping") {
-      try {
-        socket.send(JSON.stringify({ type: "pong", id: msg.id ?? "" }));
-      } catch {
-        // best-effort
+    for (const msg of messages) {
+      const msgPayload = msg.payload as Record<string, unknown> | undefined;
+      if (msg.type === "message.update" || msg.type === "message.create") {
+        const content = (msgPayload?.content as string) ?? "";
+        console.log(
+          `[Picoclaw] <- ${msg.type} content="${content.slice(0, 150)}"`,
+        );
+      } else {
+        console.log("[Picoclaw] <-", msg.type);
       }
-      return;
-    }
 
-    broadcastMessage("in", JSON.stringify(msg));
+      // Respond to application-level pings
+      if (msg.type === "ping") {
+        try {
+          socket.send(JSON.stringify({ type: "pong", id: msg.id ?? "" }));
+        } catch {
+          // best-effort
+        }
+        continue;
+      }
+
+      broadcastMessage("in", JSON.stringify(msg));
+    }
   });
 
   socket.on("close", (code, reason) => {
