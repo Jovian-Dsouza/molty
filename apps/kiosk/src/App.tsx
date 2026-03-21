@@ -47,7 +47,7 @@ function App() {
       <div className="app-face" onDoubleClick={() => setShowDebug(true)}>
         <div className="connecting-screen">
           <div className="connecting-dot" />
-          <p className="connecting-text">Connecting to OpenClaw...</p>
+          <p className="connecting-text">Connecting to picoclaw...</p>
         </div>
       </div>
     )

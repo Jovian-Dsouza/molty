@@ -5,11 +5,7 @@ import { readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { spawn, type ChildProcess } from "node:child_process";
 import { AssemblyAI } from "assemblyai";
-import {
-  getOrCreateDeviceKey,
-  signChallenge,
-  publicKeyRawBase64Url,
-} from "./deviceAttestation";
+import WebSocket from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,19 +59,13 @@ type WebSocketLike = {
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
 };
 
-const OPENCLAW_GATEWAY_URL =
-  process.env.OPENCLAW_GATEWAY_URL ?? "wss://molty.somehow.dev/";
-const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
-// Note: minimal device mode (id-only) is no longer supported by the gateway schema.
-// The gateway requires publicKey, signature, signedAt when device is present.
+const PICOCLAW_URL =
+  process.env.PICOCLAW_URL ?? "ws://127.0.0.1:18790/pico/ws";
+const PICOCLAW_TOKEN = process.env.PICOCLAW_TOKEN;
 
 let ws: WebSocketLike | null = null;
 let wsStatus: OpenClawStatus = "disconnected";
 let wsError: string | null = null;
-/** Id of the pending connect request; we only treat res with this id as handshake result. */
-let pendingConnectId: string | null = null;
-/** Keepalive timer per gateway policy.tickIntervalMs (e.g. 15000). */
-let tickIntervalId: ReturnType<typeof setInterval> | null = null;
 
 let win: BrowserWindow | null;
 
@@ -326,18 +316,12 @@ function broadcastHume(channel: string, data?: string) {
   }
 }
 
-// ── OpenClaw Gateway ──────────────────────────────────────────────────────
-
-function normalizeGatewayUrl(rawUrl: string) {
-  if (rawUrl.startsWith("https://")) return `wss://${rawUrl.slice(8)}`;
-  if (rawUrl.startsWith("http://")) return `ws://${rawUrl.slice(7)}`;
-  return rawUrl;
-}
+// ── Picoclaw Gateway (Pico Protocol) ─────────────────────────────────────
 
 function buildGatewayUrl(): string | null {
-  if (!OPENCLAW_GATEWAY_TOKEN) return null;
-  const url = new URL(normalizeGatewayUrl(OPENCLAW_GATEWAY_URL));
-  url.searchParams.set("token", OPENCLAW_GATEWAY_TOKEN);
+  if (!PICOCLAW_TOKEN) return null;
+  const url = new URL(PICOCLAW_URL);
+  url.searchParams.set("token", PICOCLAW_TOKEN);
   return url.toString();
 }
 
@@ -372,32 +356,6 @@ function setStatus(next: OpenClawStatus, error: string | null = null) {
   broadcastStatus();
 }
 
-/** Start periodic status/tick send per gateway policy to keep connection alive. */
-function startGatewayTick(socket: WebSocketLike, intervalMs: number) {
-  stopGatewayTick();
-  tickIntervalId = setInterval(() => {
-    if (ws !== socket || wsStatus !== "connected") return;
-    try {
-      const tickReq = JSON.stringify({
-        type: "req",
-        id: `tick-${Date.now()}`,
-        method: "status",
-        params: {},
-      });
-      socket.send(tickReq);
-    } catch {
-      // ignore
-    }
-  }, intervalMs);
-}
-
-function stopGatewayTick() {
-  if (tickIntervalId !== null) {
-    clearInterval(tickIntervalId);
-    tickIntervalId = null;
-  }
-}
-
 function toText(data: unknown) {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
@@ -413,8 +371,9 @@ function toText(data: unknown) {
 
 function attachSocketHandlers(socket: WebSocketLike) {
   const handleOpen = () => {
-    console.log("[Gateway] WebSocket open, waiting for challenge...");
-    broadcastMessage("system", "WebSocket open, authenticating...");
+    console.log("[Gateway] Pico WebSocket connected to", PICOCLAW_URL);
+    setStatus("connected");
+    broadcastMessage("system", "Connected to picoclaw gateway");
   };
 
   const handleClose = (...args: unknown[]) => {
@@ -433,30 +392,28 @@ function attachSocketHandlers(socket: WebSocketLike) {
         : undefined;
     console.log(
       "[Gateway] Disconnected",
-      code != null ? `(code=${code}` : "",
-      reason ? ` reason=${reason})` : code != null ? ")" : ""
+      code != null ? `(code=${code})` : "",
+      reason ? `reason=${reason}` : ""
     );
     const wasConnecting = wsStatus === "connecting";
     ws = null;
-    pendingConnectId = null;
-    stopGatewayTick();
     if (wsStatus !== "error") {
       setStatus("disconnected");
     }
     broadcastMessage("system", "Gateway disconnected");
-    // When server closes during handshake, device likely needs approval on gateway (openclaw devices list → approve)
-    if (wasConnecting && wsStatus === "disconnected") {
-      const instructions =
-        "Device may need approval. On the gateway server run: openclaw devices list, then openclaw devices approve <requestId>. Then connect again.";
-      setStatus("error", instructions);
-      broadcastMessage("system", instructions);
+    if (wasConnecting && code === 1006) {
+      console.error(
+        "[Gateway] Connection rejected during handshake — check PICOCLAW_TOKEN value and that picoclaw config has allow_token_query: true"
+      );
     }
   };
 
-  const handleError = () => {
-    console.error("[Gateway] Connection error");
-    setStatus("error", "Gateway connection failed");
-    broadcastMessage("system", "Gateway error");
+  const handleError = (...args: unknown[]) => {
+    const err = args[0] as { message?: string; code?: string } | undefined;
+    const errDetail = err?.message ?? err?.code ?? "unknown";
+    console.error("[Gateway] Connection error:", errDetail, err);
+    setStatus("error", `Gateway connection failed: ${errDetail}`);
+    broadcastMessage("system", `Gateway error: ${errDetail}`);
   };
 
   const handleMessage = (...args: unknown[]) => {
@@ -465,186 +422,45 @@ function attachSocketHandlers(socket: WebSocketLike) {
     const text = toText(data);
     console.log("[Gateway] ← IN:", text.slice(0, 200));
 
-    // Handle OpenClaw gateway protocol messages
+    // Parse and handle Pico Protocol messages
     let msg: Record<string, unknown> | undefined;
     try {
       msg = JSON.parse(text);
     } catch {
-      // Not JSON — pass through to UI
       broadcastMessage("in", text);
       return;
     }
 
-    // Step 1: Server sends connect.challenge → we reply with a "connect" RPC request (device attestation)
-    if (msg?.type === "event" && msg?.event === "connect.challenge") {
+    if (msg?.type) {
+      console.log("[Gateway] ← Pico msg type:", msg.type);
+    }
+
+    // Respond to application-level pings
+    if (msg?.type === "ping") {
+      const pong = JSON.stringify({ type: "pong", id: msg.id ?? "" });
       try {
-        const nonce = String(
-          (msg.payload as Record<string, unknown>)?.nonce ?? ""
-        );
-        const userData = app.getPath("userData");
-        const deviceKey = getOrCreateDeviceKey(userData);
-
-        // Client identity constants (must match OpenClaw's GATEWAY_CLIENT_IDS/MODES)
-        const clientId = "cli";
-        const clientMode = "cli";
-        const role = "operator";
-        const scopes = ["operator.read", "operator.write"];
-
-        console.log(
-          "[Gateway] Got connect.challenge, sending connect request (device attestation)..."
-        );
-
-        const { signature, signedAt } = signChallenge({
-          nonce,
-          privateKeyPem: deviceKey.privateKeyPem,
-          deviceId: deviceKey.deviceId,
-          clientId,
-          clientMode,
-          role,
-          scopes,
-          token: OPENCLAW_GATEWAY_TOKEN ?? null,
-        });
-
-        const connectReqId = `connect-${Date.now()}`;
-        pendingConnectId = connectReqId;
-
-        const deviceParams = {
-          id: deviceKey.deviceId,
-          publicKey: publicKeyRawBase64Url(deviceKey.publicKeyPem),
-          signature,
-          signedAt,
-          nonce,
-        };
-
-        const connectReq = JSON.stringify({
-          type: "req",
-          id: connectReqId,
-          method: "connect",
-          params: {
-            minProtocol: 3,
-            maxProtocol: 3,
-            client: {
-              id: clientId,
-              version: "1.0.0",
-              platform: process.platform,
-              mode: clientMode,
-            },
-            role,
-            scopes,
-            caps: ["voice"],
-            auth: {
-              token: OPENCLAW_GATEWAY_TOKEN,
-            },
-            locale: "en-US",
-            userAgent: "openclaw-cli/1.0.0 molty-kiosk",
-            device: deviceParams,
-          },
-        });
-        socket.send(connectReq);
-        console.log("[Gateway] → OUT: connect request sent");
-        broadcastMessage("out", connectReq);
-      } catch (err) {
-        const errMsg =
-          err instanceof Error ? err.message : String(err);
-        console.error(
-          "[Gateway] Failed to handle connect.challenge:",
-          errMsg,
-          err instanceof Error ? err.stack : ""
-        );
-        setStatus(
-          "error",
-          `Device attestation failed: ${errMsg}. Try deleting the device key and restarting.`
-        );
-        broadcastMessage(
-          "system",
-          `Device attestation error: ${errMsg}`
-        );
+        socket.send(pong);
+      } catch {
+        // best-effort
       }
-      broadcastMessage("in", text);
       return;
     }
 
-    // Step 2: Server responds to our connect request (match by id per protocol)
-    if (msg?.type === "res" && msg?.id === pendingConnectId) {
-      pendingConnectId = null;
-      const payload = msg.payload as
-        | {
-            type?: string;
-            policy?: { tickIntervalMs?: number };
-            requestId?: string;
-          }
-        | undefined;
-      const errPayload = msg.error as
-        | {
-            message?: string;
-            requestId?: string;
-            details?: { requestId?: string };
-          }
-        | undefined;
-      const requestId =
-        payload?.requestId ??
-        errPayload?.requestId ??
-        errPayload?.details?.requestId ??
-        (payload as Record<string, unknown>)?.pairingRequestId;
-
-      if (msg.ok) {
-        // hello-ok = connected; hello-pending = device pending approval (some gateways send this before closing)
-        if (payload?.type === "hello-pending" && requestId) {
-          const instructions = `Device pending approval. On the gateway server run: openclaw devices approve ${requestId}`;
-          console.log("[Gateway]", instructions);
-          setStatus("error", instructions);
-          broadcastMessage("system", instructions);
-        } else if (payload?.type === "hello-ok" || !payload?.type) {
-          console.log(
-            "[Gateway] Connect response OK (hello-ok):",
-            JSON.stringify(payload).slice(0, 200)
-          );
-          setStatus("connected");
-          broadcastMessage("system", "Gateway authenticated and connected");
-          const tickMs = payload?.policy?.tickIntervalMs ?? 15_000;
-          startGatewayTick(socket, tickMs);
-        } else {
-          setStatus("connected");
-          broadcastMessage("system", "Gateway authenticated and connected");
-          const tickMs = payload?.policy?.tickIntervalMs ?? 15_000;
-          startGatewayTick(socket, tickMs);
-        }
-      } else {
-        const err = msg.error as { message?: string } | undefined;
-        const baseError = err?.message ?? "Gateway authentication failed";
-        const instructions = requestId
-          ? `On the gateway server run: openclaw devices list, then openclaw devices approve ${requestId}. Then connect again.`
-          : "On the gateway server run: openclaw devices list (to see pending devices), then openclaw devices approve <requestId>. Then connect again.";
-        const fullError = baseError + ". " + instructions;
-        console.error(
-          "[Gateway] Connect response ERROR:",
-          baseError,
-          requestId ? `requestId=${requestId}` : ""
-        );
-        setStatus("error", fullError);
-        broadcastMessage("system", fullError);
-      }
-      broadcastMessage("in", text);
-      return;
-    }
-
-    // Other res (e.g. status, tick response) — forward to UI only
+    // Forward all other messages to the renderer for useMoltyState to handle
     broadcastMessage("in", text);
   };
 
-  if (typeof socket.addEventListener === "function") {
-    socket.addEventListener("open", handleOpen);
-    socket.addEventListener("message", handleMessage);
-    socket.addEventListener("close", handleClose);
-    socket.addEventListener("error", handleError);
-    return;
-  }
-
+  // The ws package uses .on() for event binding
   if (typeof socket.on === "function") {
     socket.on("open", handleOpen);
     socket.on("message", handleMessage);
     socket.on("close", handleClose);
     socket.on("error", handleError);
+  } else if (typeof socket.addEventListener === "function") {
+    socket.addEventListener("open", handleOpen);
+    socket.addEventListener("message", handleMessage);
+    socket.addEventListener("close", handleClose);
+    socket.addEventListener("error", handleError);
   }
 }
 
@@ -655,26 +471,22 @@ function connectGateway(): OpenClawStatusPayload {
 
   const url = buildGatewayUrl();
   if (!url) {
-    setStatus("error", "Missing OPENCLAW_GATEWAY_TOKEN");
+    setStatus("error", "Missing PICOCLAW_TOKEN");
     return getStatusPayload();
   }
 
-  const WebSocketCtor = (globalThis as Record<string, unknown>).WebSocket as
-    | (new (url: string) => WebSocketLike)
-    | undefined;
-  if (!WebSocketCtor) {
-    setStatus("error", "WebSocket not available in main process");
-    return getStatusPayload();
-  }
+  // Log the URL with token partially masked for debugging
+  const maskedUrl = url.replace(/token=(.{8})[^&]*/, "token=$1...");
+  console.log("[Gateway] Connecting to", maskedUrl);
+  console.log("[Gateway] Token length:", PICOCLAW_TOKEN?.length ?? 0);
 
-  console.log("[Gateway] Connecting to", OPENCLAW_GATEWAY_URL);
   setStatus("connecting");
   try {
-    ws = new WebSocketCtor(url);
+    ws = new WebSocket(url) as unknown as WebSocketLike;
     attachSocketHandlers(ws);
-    broadcastMessage("system", "Connecting to OpenClaw gateway...");
+    broadcastMessage("system", "Connecting to picoclaw gateway...");
   } catch (err) {
-    console.error("[Gateway] Failed to connect:", err);
+    console.error("[Gateway] Failed to create WebSocket:", err);
     setStatus("error", "Failed to start connection");
   }
 
@@ -682,8 +494,6 @@ function connectGateway(): OpenClawStatusPayload {
 }
 
 function disconnectGateway(): OpenClawStatusPayload {
-  pendingConnectId = null;
-  stopGatewayTick();
   if (ws) {
     try {
       ws.close();
@@ -700,6 +510,11 @@ function disconnectGateway(): OpenClawStatusPayload {
   return getStatusPayload();
 }
 
+/**
+ * Send a message to picoclaw via Pico Protocol.
+ * If payload has a `content` string field, wraps it as message.send.
+ * Otherwise wraps the whole payload's JSON as the content string.
+ */
 function sendGateway(payload: unknown): { ok: boolean; error?: string } {
   if (!ws || wsStatus !== "connected") {
     console.log(
@@ -710,7 +525,24 @@ function sendGateway(payload: unknown): { ok: boolean; error?: string } {
     return { ok: false, error: "Gateway not connected" };
   }
 
-  const data = typeof payload === "string" ? payload : JSON.stringify(payload);
+  // If it already looks like a Pico Protocol message (has a type field), send as-is
+  // This allows the debug panel to send raw Pico messages for testing.
+  const isAlreadyPicoMsg =
+    payload !== null &&
+    typeof payload === "object" &&
+    typeof (payload as Record<string, unknown>).type === "string";
+
+  const data = isAlreadyPicoMsg
+    ? JSON.stringify(payload)
+    : JSON.stringify({
+        type: "message.send",
+        id: `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        payload: {
+          content:
+            typeof payload === "string" ? payload : JSON.stringify(payload),
+        },
+      });
+
   console.log("[Gateway] → OUT:", data.slice(0, 200));
   try {
     ws.send(data);

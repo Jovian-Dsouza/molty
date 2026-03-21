@@ -1,0 +1,93 @@
+{
+  "session": {
+    "dm_scope": "per-channel-peer"
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/root/.picoclaw/workspace",
+      "restrict_to_workspace": false,
+      "allow_read_outside_workspace": false,
+      "model_name": "claude-sonnet-4-6",
+      "max_tokens": 8192,
+      "temperature": 0.7,
+      "max_tool_iterations": 20,
+      "summarize_message_threshold": 20,
+      "summarize_token_percent": 75
+    }
+  },
+  "channels": {
+    "pico": {
+      "enabled": true,
+      "token": "${PICOCLAW_TOKEN}",
+      "allow_token_query": true,
+      "ping_interval": 30,
+      "read_timeout": 60,
+      "write_timeout": 10,
+      "max_connections": 10,
+      "allow_from": [],
+      "placeholder": {
+        "enabled": true,
+        "text": "Thinking... 💭"
+      }
+    }
+  },
+  "model_list": [
+    {
+      "model_name": "claude-sonnet-4-6",
+      "model": "anthropic/claude-sonnet-4-6",
+      "api_base": "https://api.anthropic.com/v1",
+      "api_key": ""
+    }
+  ],
+  "providers": {
+    "anthropic": {
+      "api_key": ""
+    }
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790,
+    "hot_reload": false
+  },
+  "tools": {
+    "web": {
+      "enabled": false
+    },
+    "cron": {
+      "enabled": false
+    },
+    "exec": {
+      "enabled": false
+    },
+    "skills": {
+      "enabled": false
+    },
+    "mcp": {
+      "enabled": true,
+      "discovery": {
+        "enabled": false
+      },
+      "servers": {
+        "molty-skills": {
+          "enabled": true,
+          "type": "sse",
+          "url": "http://mcp-skills:3001/sse"
+        }
+      }
+    },
+    "append_file": { "enabled": false },
+    "edit_file": { "enabled": false },
+    "find_skills": { "enabled": false },
+    "install_skill": { "enabled": false },
+    "list_dir": { "enabled": false },
+    "read_file": { "enabled": false },
+    "send_file": { "enabled": false },
+    "spawn": { "enabled": false },
+    "subagent": { "enabled": false },
+    "web_fetch": { "enabled": false },
+    "write_file": { "enabled": false }
+  },
+  "heartbeat": {
+    "enabled": false
+  }
+}

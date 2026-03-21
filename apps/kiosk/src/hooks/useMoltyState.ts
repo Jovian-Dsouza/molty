@@ -18,6 +18,11 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+/** Detect picoclaw placeholder messages that should not be shown as subtitles. */
+function isPlaceholder(text: string): boolean {
+  return text.trim() === "Thinking... 💭";
+}
+
 const VALID_FACES = new Set<FaceExpression>([
   "idle", "listening", "thinking", "excited", "watching",
   "winning", "losing", "celebrating", "dying", "error",
@@ -106,17 +111,6 @@ export function useMoltyState() {
     if ("speechSynthesis" in window) {
       speechSynthesis.cancel();
     }
-
-    // Abort the current run on the gateway
-    const abortReq = {
-      type: "req",
-      id: `abort-${Date.now()}`,
-      method: "chat.abort",
-      params: { sessionKey: "main" },
-    };
-    window.openclaw.send(abortReq).catch(() => {
-      // best-effort abort
-    });
 
     // Reset all processing state
     processingRef.current = false;
@@ -330,7 +324,7 @@ export function useMoltyState() {
       setSubtitle(`Sending: "${text}"`);
       setIsSending(true);
 
-      // If OpenClaw never responds, resume after a timeout so we don't stay stuck
+      // If picoclaw never responds, resume after a timeout so we don't stay stuck
       if (responseTimeoutRef.current) clearTimeout(responseTimeoutRef.current);
       responseTimeoutRef.current = setTimeout(() => {
         responseTimeoutRef.current = null;
@@ -346,23 +340,18 @@ export function useMoltyState() {
         }
       }, 30_000);
 
-      // Send as a proper OpenClaw RPC request (chat.send)
+      // Send as a Pico Protocol message.send request
       const chatReq = {
-        type: "req",
-        id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        method: "chat.send",
-        params: {
-          sessionKey: "main",
-          message: text,
-          idempotencyKey: `kiosk-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        },
+        type: "message.send",
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        payload: { content: text },
       };
-      console.log("[Molty] Sending chat.send to OpenClaw:", JSON.stringify(chatReq).slice(0, 200));
+      console.log("[Molty] Sending message.send to picoclaw:", JSON.stringify(chatReq).slice(0, 200));
       try {
         const result = await window.openclaw.send(chatReq);
         console.log("[Molty] Send result:", JSON.stringify(result));
       } catch (err) {
-        console.error("[Molty] chat.send failed:", err);
+        console.error("[Molty] message.send failed:", err);
         // Recover immediately instead of waiting for the 30s timeout
         processingRef.current = false;
         thinkingLockRef.current = false;
@@ -398,12 +387,71 @@ export function useMoltyState() {
     processTranscript(transcript);
   }, [transcript, processTrigger, processTranscript, setTranscript]);
 
-  // ── Listen for OpenClaw chat events (streamed response) ───────────────
+  // ── Listen for Pico Protocol messages from picoclaw ──────────────────
 
   useEffect(() => {
-    // Accumulate streamed text across delta events for the current run
-    let currentRunId: string | null = null;
-    let accumulated = "";
+    // Track the latest message content across create/update events
+    let latestMessageId: string | null = null;
+    let latestContent = "";
+
+    const finalizeSpeech = async (rawContent: string) => {
+      if (interruptedRef.current) {
+        console.log("[Molty] typing.stop ignored (was interrupted)");
+        latestMessageId = null;
+        latestContent = "";
+        return;
+      }
+
+      const strippedFinal = stripMarkdown(rawContent);
+      const { cleaned: finalText, face: agentFace } = parseFaceDirectives(strippedFinal);
+      console.log("[Molty] Final response:", finalText.slice(0, 120), agentFace ? `[face:${agentFace}]` : "");
+      latestMessageId = null;
+      latestContent = "";
+
+      if (!finalText.trim()) {
+        processingRef.current = false;
+        thinkingLockRef.current = false;
+        if (responseTimeoutRef.current) {
+          clearTimeout(responseTimeoutRef.current);
+          responseTimeoutRef.current = null;
+        }
+        setFace("listening");
+        setSubtitle("");
+        resume();
+        setProcessTrigger((t) => t + 1);
+        return;
+      }
+
+      thinkingLockRef.current = false;
+      if (agentFace) setFace(agentFace);
+      setSubtitle(finalText);
+      setIsTalking(true);
+
+      if (responseTimeoutRef.current) {
+        clearTimeout(responseTimeoutRef.current);
+        responseTimeoutRef.current = null;
+      }
+
+      pause();
+      const result = await speak(finalText);
+
+      if (result === "interrupted") {
+        return;
+      }
+
+      setIsTalking(false);
+      if (responseTimeoutRef.current) {
+        clearTimeout(responseTimeoutRef.current);
+        responseTimeoutRef.current = null;
+      }
+      setFace("listening");
+      await new Promise((r) => setTimeout(r, 300));
+      setTranscript(null);
+      processingRef.current = false;
+      resume();
+      setSubtitle("I'm listening...");
+      setProcessTrigger((t) => t + 1);
+    };
 
     const off = window.openclaw.onMessage(async (payload) => {
       if (payload.direction !== "in") return;
@@ -415,190 +463,113 @@ export function useMoltyState() {
         return;
       }
 
-      // Handle chat events (streamed response from agent)
-      if (msg.type === "event" && msg.event === "chat") {
-        const chatPayload = msg.payload as {
-          runId?: string;
-          sessionKey?: string;
-          seq?: number;
-          state?: string;
-          message?: { role?: string; content?: string | unknown[] };
-          errorMessage?: string;
-        } | undefined;
+      const msgType = msg.type as string | undefined;
 
-        if (!chatPayload) return;
+      // typing.start — agent is thinking, show thinking state
+      if (msgType === "typing.start") {
+        setIsSending(false);
+        return;
+      }
 
-        const { runId, state } = chatPayload;
+      // typing.stop — agent finished; trigger final speech with accumulated content
+      if (msgType === "typing.stop") {
+        if (latestContent) {
+          await finalizeSpeech(latestContent);
+        } else if (processingRef.current) {
+          // No content received — treat as empty response
+          await finalizeSpeech("");
+        }
+        return;
+      }
 
-        // Extract text content from the message
-        const messageContent = chatPayload.message;
-        let textContent = "";
-        if (typeof messageContent?.content === "string") {
-          textContent = messageContent.content;
-        } else if (Array.isArray(messageContent?.content)) {
-          // Content blocks format: [{type: "text", text: "..."}]
-          textContent = (messageContent.content as { type?: string; text?: string }[])
-            .filter((b) => b.type === "text" && b.text)
-            .map((b) => b.text)
-            .join("");
+      // message.create — new message (may be placeholder text or first chunk)
+      if (msgType === "message.create") {
+        const msgPayload = msg.payload as { content?: string; message_id?: string } | undefined;
+        const content = msgPayload?.content ?? "";
+        const messageId = msgPayload?.message_id ?? null;
+
+        setIsSending(false);
+
+        // Skip placeholder text (e.g. "Thinking... 💭") — just show thinking face
+        if (messageId) {
+          latestMessageId = messageId;
+          latestContent = content;
         }
 
-        if (state === "delta") {
-          // Streaming delta — accumulate text (send succeeded)
-          setIsSending(false);
-          if (runId && runId !== currentRunId) {
-            currentRunId = runId;
-            accumulated = "";
-          }
-          if (textContent) {
-            accumulated = textContent; // delta sends full text so far
-            // Strip markdown and face directives so captions stay readable during streaming
-            const stripped = stripMarkdown(accumulated);
-            const { cleaned, face: streamFace } = parseFaceDirectives(stripped);
-            // Apply face directive as soon as it arrives during streaming (skip if thinking lock is active)
-            if (streamFace && !thinkingLockRef.current) setFace(streamFace);
-            const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
-            setSubtitle(display);
-          }
-          return;
+        if (content && !isPlaceholder(content)) {
+          const stripped = stripMarkdown(content);
+          const { cleaned, face: streamFace } = parseFaceDirectives(stripped);
+          if (streamFace && !thinkingLockRef.current) setFace(streamFace);
+          const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
+          setSubtitle(display);
+        }
+        return;
+      }
+
+      // message.update — streaming update to existing message
+      if (msgType === "message.update") {
+        const msgPayload = msg.payload as { message_id?: string; content?: string } | undefined;
+        const content = msgPayload?.content ?? "";
+        const messageId = msgPayload?.message_id ?? null;
+
+        if (messageId === latestMessageId || !latestMessageId) {
+          latestMessageId = messageId;
+          latestContent = content;
         }
 
-        if (state === "final") {
-          // If we were interrupted, ignore the final event
-          if (interruptedRef.current) {
-            console.log("[Molty] Chat final ignored (was interrupted)");
-            currentRunId = null;
-            accumulated = "";
-            return;
-          }
+        if (content) {
+          const stripped = stripMarkdown(content);
+          const { cleaned, face: streamFace } = parseFaceDirectives(stripped);
+          if (streamFace && !thinkingLockRef.current) setFace(streamFace);
+          const display = cleaned.length > 200 ? "..." + cleaned.slice(-200) : cleaned;
+          setSubtitle(display);
+        }
+        return;
+      }
 
-          // Final response — extract face directives, then speak cleaned text
-          const rawFinal = textContent || accumulated;
-          const strippedFinal = stripMarkdown(rawFinal);
-          const { cleaned: finalText, face: agentFace } = parseFaceDirectives(strippedFinal);
-          console.log("[Molty] Chat final:", finalText.slice(0, 120), agentFace ? `[face:${agentFace}]` : "");
-          currentRunId = null;
-          accumulated = "";
+      // error — gateway reported an error
+      if (msgType === "error") {
+        if (!processingRef.current) return;
 
-          if (!finalText.trim()) {
-            // Empty response — resume listening
-            processingRef.current = false;
-            thinkingLockRef.current = false;
-            if (responseTimeoutRef.current) {
-              clearTimeout(responseTimeoutRef.current);
-              responseTimeoutRef.current = null;
-            }
-            setFace("listening");
-            setSubtitle("");
-            resume();
-            setProcessTrigger((t) => t + 1);
-            return;
-          }
-
-          // Release the thinking lock now that TTS is about to start,
-          // then apply the agent's face directive
-          thinkingLockRef.current = false;
-          if (agentFace) {
-            setFace(agentFace);
-          }
-          setSubtitle(finalText);
-          setIsTalking(true);
-
-          // Clear response timeout now — we got the response, don't let
-          // the timer fire mid-playback and call resume().
-          if (responseTimeoutRef.current) {
-            clearTimeout(responseTimeoutRef.current);
-            responseTimeoutRef.current = null;
-          }
-
-          // Mute mic while speaking to avoid picking up TTS audio (echo loop).
-          // pause() may already be active from processTranscript, but the 30s
-          // timeout could have called resume() in the meantime, so re-pause.
-          pause();
-
-          const result = await speak(finalText);
-
-          // If interrupted, the interrupt() handler already reset everything
-          if (result === "interrupted") {
-            return;
-          }
-
-          // Normal completion — brief delay before resuming mic so residual
-          // speaker audio doesn't get picked up as a new transcript (echo).
-          setIsTalking(false);
-          if (responseTimeoutRef.current) {
-            clearTimeout(responseTimeoutRef.current);
-            responseTimeoutRef.current = null;
-          }
+        const errPayload = msg.payload as { message?: string; code?: string } | undefined;
+        const errMsg = errPayload?.message ?? errPayload?.code ?? "Gateway error";
+        console.error("[Molty] Pico error:", errMsg);
+        latestMessageId = null;
+        latestContent = "";
+        processingRef.current = false;
+        thinkingLockRef.current = false;
+        setIsSending(false);
+        if (responseTimeoutRef.current) {
+          clearTimeout(responseTimeoutRef.current);
+          responseTimeoutRef.current = null;
+        }
+        setFace("error");
+        setSubtitle(errMsg);
+        errorDisplayTimeoutRef.current = setTimeout(() => {
+          errorDisplayTimeoutRef.current = null;
           setFace("listening");
-          await new Promise((r) => setTimeout(r, 300));
-          // Clear any stale transcript that arrived during TTS
-          setTranscript(null);
-          processingRef.current = false;
+          setSubtitle("");
           resume();
-
-          setSubtitle("I'm listening...");
           setProcessTrigger((t) => t + 1);
-          return;
-        }
-
-        if (state === "error" || state === "aborted") {
-          // If we triggered the abort ourselves, don't show an error
-          if (interruptedRef.current) {
-            console.log("[Molty] Chat aborted (user-initiated interrupt)");
-            currentRunId = null;
-            accumulated = "";
-            return;
-          }
-
-          // Ignore stale error/aborted events that arrive when we're not processing
-          if (!processingRef.current) {
-            console.log("[Molty] Ignoring stale chat error/aborted (not processing)");
-            currentRunId = null;
-            accumulated = "";
-            return;
-          }
-
-          const errMsg = chatPayload.errorMessage ?? state;
-          console.error("[Molty] Chat error/aborted:", errMsg);
-          currentRunId = null;
-          accumulated = "";
-          processingRef.current = false;
-          thinkingLockRef.current = false;
-          setIsSending(false);
-          if (responseTimeoutRef.current) {
-            clearTimeout(responseTimeoutRef.current);
-            responseTimeoutRef.current = null;
-          }
-          setFace("error");
-          setSubtitle(errMsg);
-          errorDisplayTimeoutRef.current = setTimeout(() => {
-            errorDisplayTimeoutRef.current = null;
-            setFace("listening");
-            setSubtitle("");
-            resume();
-            setProcessTrigger((t) => t + 1);
-          }, 3000);
-          return;
-        }
+        }, 3000);
       }
     });
     return off;
-  }, [speak, pause, resume, interrupt, setTranscript]);
+  }, [speak, pause, resume, setTranscript]);
 
   // Listen for connection status changes
   useEffect(() => {
     const off = window.openclaw.onStatus((status) => {
-      console.log("[Molty] OpenClaw status:", status.status, status.error ?? "");
+      console.log("[Molty] Picoclaw status:", status.status, status.error ?? "");
       setIsConnected(status.status === "connected");
     });
     return off;
   }, []);
 
-  // Auto-connect to OpenClaw and wait for successful connection before enabling voice
+  // Auto-connect to picoclaw and wait for successful connection before enabling voice
   useEffect(() => {
     async function init() {
-      console.log("[Molty] Connecting to OpenClaw...");
+      console.log("[Molty] Connecting to picoclaw...");
       try {
         const result = await window.openclaw.connect();
         console.log("[Molty] Connect result:", JSON.stringify(result));
@@ -617,7 +588,7 @@ export function useMoltyState() {
   // Once connected, mark as ready for voice
   useEffect(() => {
     if (isConnected && !isReady) {
-      console.log("[Molty] OpenClaw connected — starting voice");
+      console.log("[Molty] Picoclaw connected — starting voice");
       setIsReady(true);
       setFace("listening");
       setSubtitle("I'm listening...");

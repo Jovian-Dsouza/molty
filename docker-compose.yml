@@ -1,0 +1,36 @@
+services:
+  # MCP skills server — exposes molty TypeScript skills as MCP tools over SSE
+  mcp-skills:
+    build:
+      context: .
+      dockerfile: apps/mcp-skills/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      STORK_API_KEY: "${STORK_API_KEY}"
+      LIFI_API_KEY: "${LIFI_API_KEY}"
+      PRIVATE_KEY: "${PRIVATE_KEY}"
+      PREDICTION_API_URL: "${PREDICTION_API_URL:-http://localhost:3999}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Picoclaw AI gateway — connects to mcp-skills via SSE, serves kiosk via Pico Protocol
+  picoclaw:
+    image: docker.io/sipeed/picoclaw:latest
+    restart: unless-stopped
+    ports:
+      - "18790:18790"
+    volumes:
+      - ./molty/picoclaw/config.json:/root/.picoclaw/config.json:ro
+      - ./molty/workspace:/root/.picoclaw/workspace:ro
+    environment:
+      PICOCLAW_CHANNELS_PICO_TOKEN: "${PICOCLAW_TOKEN}"
+      PICOCLAW_PROVIDERS_ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    depends_on:
+      mcp-skills:
+        condition: service_healthy
